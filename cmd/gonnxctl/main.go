@@ -8,6 +8,7 @@
 //
 //	healthz                     check daemon liveness
 //	install <source> [--name N] install a bundle
+//	update  <name>              re-install bundle from same source (refreshes manifest)
 //	pull    <name>              download bundle assets (with progress bar)
 //	list                        list installed bundles
 //	get <name>                  show bundle details
@@ -49,6 +50,9 @@ func main() {
 		c.get("/v1/healthz")
 	case "install":
 		installCmd(c, args[1:])
+	case "update":
+		requireArg(args, 2, "update <name>")
+		updateCmd(c, args[1])
 	case "pull":
 		requireArg(args, 2, "pull <name>")
 		pullCmd(c, args[1])
@@ -113,6 +117,37 @@ func installCmd(c *client, args []string) {
 		"name":   *name,
 		"ref":    *ref,
 		"dir":    *dir,
+	}
+	c.post("/v1/models:install", body)
+}
+
+// updateCmd re-installs a bundle from the same source recorded in the registry.
+// It reads source/ref/dir from GET /v1/models/<name>, then calls install with
+// those values. Assets are NOT re-downloaded (run pull separately if needed).
+func updateCmd(c *client, name string) {
+	// 1. Fetch current metadata.
+	raw, err := c.raw(http.MethodGet, "/v1/models/"+name, nil, "")
+	if err != nil {
+		fatal(fmt.Errorf("get %s: %w", name, err))
+	}
+	var meta struct {
+		SourceURL string `json:"sourceUrl"`
+		SourceRef string `json:"sourceRef"`
+		SourceDir string `json:"sourceDir"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		fatal(fmt.Errorf("parse metadata: %w", err))
+	}
+	if meta.SourceURL == "" {
+		fatal(fmt.Errorf("bundle %q has no recorded source URL", name))
+	}
+
+	// 2. Re-install (daemon upserts, so no need to rm first).
+	body := map[string]string{
+		"source": meta.SourceURL,
+		"name":   name,
+		"ref":    meta.SourceRef,
+		"dir":    meta.SourceDir,
 	}
 	c.post("/v1/models:install", body)
 }
@@ -432,6 +467,7 @@ Usage:
 Commands:
   healthz                       check daemon liveness
   install <src> [--name N]      install bundle from git source
+  update  <name>                re-install from same source (refreshes manifest)
   pull    <name>                download bundle assets (progress bar)
   list                          list installed bundles
   get <name>                    show bundle metadata
