@@ -142,6 +142,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # нужна вся история тегов
+
       - uses: actions/download-artifact@v4
         with:
           name: dist-linux-amd64
@@ -152,8 +156,62 @@ jobs:
           name: dist-linux-arm64-final
           path: dist
 
+      # ── Changelog: коммиты от предыдущего тега до текущего ────────────
+      - name: generate changelog
+        id: changelog
+        run: |
+          CURRENT="${{ github.ref_name }}"
+
+          # предыдущий тег — ближайший annotated/lightweight тег, исключая текущий
+          PREV=$(git tag --sort=-version:refname \
+                   | grep -v "^${CURRENT}$" \
+                   | head -1)
+
+          if [ -z "$PREV" ]; then
+            RANGE="$CURRENT"
+            HEADER="_First release — all commits:_"
+          else
+            RANGE="${PREV}..${CURRENT}"
+            HEADER="_Changes since ${PREV}:_"
+          fi
+
+          # формат: "<short-sha> <subject>" сгруппированные по conventional commit prefix
+          LOG=$(git log "$RANGE" \
+                  --pretty=format:"%h %s" \
+                  --no-merges)
+
+          # разбить по prefix feat/fix/ci/docs/refactor/chore
+          make_section() {
+            local prefix="$1" title="$2"
+            local lines
+            lines=$(echo "$LOG" | grep -i "^[a-f0-9]\+ ${prefix}" || true)
+            if [ -n "$lines" ]; then
+              printf '\n**%s**\n' "$title"
+              echo "$lines" | while IFS= read -r line; do
+                sha=$(echo "$line" | cut -d' ' -f1)
+                msg=$(echo "$line" | cut -d' ' -f2-)
+                printf -- '- [`%s`](https://github.com/${{ github.repository }}/commit/%s) %s\n' \
+                  "$sha" "$sha" "$msg"
+              done
+            fi
+          }
+
+          {
+            echo "$HEADER"
+            make_section 'feat'     '🚀 Features'
+            make_section 'fix'      '🐛 Bug fixes'
+            make_section 'perf'     '⚡ Performance'
+            make_section 'refactor' '♻️  Refactor'
+            make_section 'ci'       '👷 CI / build'
+            make_section 'docs'     '📝 Docs'
+            make_section 'chore'    '🔧 Chore'
+          } > changelog.md
+
+          # передаём путь к файлу в следующий step
+          echo "path=changelog.md" >> "$GITHUB_OUTPUT"
+
       - name: create release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: ${{ steps.changelog.outputs.path }}
