@@ -12,7 +12,7 @@
 //	pull    <name>              download bundle assets (with progress bar)
 //	list                        list installed bundles
 //	get <name>                  show bundle details
-//	rm  <name>                  uninstall a bundle
+//	rm  <name>                  uninstall a bundle (stops worker + removes files)
 //	load   <name>               start worker
 //	unload <name>               stop worker
 //	describe <name>             show input/output schema
@@ -63,7 +63,7 @@ func main() {
 		c.get("/v1/models/" + args[1])
 	case "rm":
 		requireArg(args, 2, "rm <name>")
-		c.do(http.MethodDelete, "/v1/models/"+args[1], nil)
+		rmCmd(c, args[1])
 	case "load":
 		requireArg(args, 2, "load <name>")
 		c.post("/v1/models/"+args[1]+":load", nil)
@@ -83,9 +83,6 @@ func main() {
 }
 
 // installCmd handles: gonnxctl install [flags] <url>
-//
-// flag.FlagSet stops at the first non-flag argument, so flags after the URL
-// would be silently ignored. We partition args ourselves first.
 func installCmd(c *client, args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	name := fs.String("name", "", "override bundle name")
@@ -122,10 +119,7 @@ func installCmd(c *client, args []string) {
 }
 
 // updateCmd re-installs a bundle from the same source recorded in the registry.
-// It reads source/ref/dir from GET /v1/models/<name>, then calls install with
-// those values. Assets are NOT re-downloaded (run pull separately if needed).
 func updateCmd(c *client, name string) {
-	// 1. Fetch current metadata.
 	raw, err := c.raw(http.MethodGet, "/v1/models/"+name, nil, "")
 	if err != nil {
 		fatal(fmt.Errorf("get %s: %w", name, err))
@@ -141,8 +135,6 @@ func updateCmd(c *client, name string) {
 	if meta.SourceURL == "" {
 		fatal(fmt.Errorf("bundle %q has no recorded source URL", name))
 	}
-
-	// 2. Re-install (daemon upserts, so no need to rm first).
 	body := map[string]string{
 		"source": meta.SourceURL,
 		"name":   name,
@@ -152,12 +144,16 @@ func updateCmd(c *client, name string) {
 	c.post("/v1/models:install", body)
 }
 
-// pullCmd streams the NDJSON progress from the daemon and renders an
-// Ollama-style progress bar in the terminal.
-//
-// Output example (one overwritten line per asset):
-//
-//	model   [=============>       ]  66%  221.2 MB / 334.1 MB  14.3 MB/s
+// rmCmd stops the worker, removes the registry entry, and deletes bundle files.
+func rmCmd(c *client, name string) {
+	_, err := c.raw(http.MethodDelete, "/v1/models/"+name, nil, "")
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "%s: removed\n", name)
+}
+
+// pullCmd streams the NDJSON progress from the daemon and renders a progress bar.
 func pullCmd(c *client, name string) {
 	req, err := http.NewRequest(http.MethodPost,
 		c.base+"/v1/models/"+name+":pull", nil)
@@ -176,24 +172,19 @@ func pullCmd(c *client, name string) {
 		fatal(fmt.Errorf("HTTP %d: %s", resp.StatusCode, body))
 	}
 
-	// Each active asset gets one terminal line; we track per-asset state
-	// so we can overwrite the correct line with \r.
 	type assetState struct {
 		written  int64
 		total    int64
 		startAt  time.Time
-		lastLine int // length of last printed line (for padding)
+		lastLine int
 	}
 	states := map[string]*assetState{}
-	// order preserves insertion order for stable output
 	order := []string{}
-
-	// Track how many lines we've printed so we can move cursor up.
 	printedLines := 0
 
 	clearLines := func(n int) {
 		for i := 0; i < n; i++ {
-			fmt.Fprint(os.Stderr, "\033[1A\033[2K") // cursor up + erase line
+			fmt.Fprint(os.Stderr, "\033[1A\033[2K")
 		}
 	}
 
@@ -233,8 +224,12 @@ func pullCmd(c *client, name string) {
 			st.total = total
 			renderAll()
 
-		case "done":
-			// Final render with all bars at 100%.
+		case "venv":
+			// Print venv status lines below the asset bars.
+			if printedLines > 0 {
+				clearLines(printedLines)
+				printedLines = 0
+			}
 			for _, id := range order {
 				st := states[id]
 				if st.total > 0 {
@@ -242,20 +237,25 @@ func pullCmd(c *client, name string) {
 				}
 			}
 			renderAll()
-			// Print newlines to leave bars on screen.
+			msg, _ := ev["msg"].(string)
+			fmt.Fprintf(os.Stderr, "venv: %s\n", msg)
+			printedLines++
+
+		case "done":
+			for _, id := range order {
+				st := states[id]
+				if st.total > 0 {
+					st.written = st.total
+				}
+			}
+			renderAll()
 			for range order {
 				fmt.Fprintln(os.Stderr)
 			}
-			skipped, _ := ev["skipped"].(bool)
-			if skipped {
-				fmt.Fprintf(os.Stderr, "%s: all assets already present\n", name)
-			} else {
-				fmt.Fprintf(os.Stderr, "%s: pull complete\n", name)
-			}
+			fmt.Fprintf(os.Stderr, "%s: pull complete\n", name)
 			return
 
 		case "error":
-			// Print newlines to leave partial bars visible.
 			for range order {
 				fmt.Fprintln(os.Stderr)
 			}
@@ -268,9 +268,6 @@ func pullCmd(c *client, name string) {
 	}
 }
 
-// formatBar renders a single progress bar line for one asset.
-//
-//	model   [=============>       ]  66%  221.2 MB / 334.1 MB  14.3 MB/s
 func formatBar(id string, written, total int64, elapsed time.Duration) string {
 	const barWidth = 20
 
@@ -300,7 +297,6 @@ func formatBar(id string, written, total int64, elapsed time.Duration) string {
 		}
 		bar = string(barRunes)
 	} else {
-		// Unknown total: spinning indicator.
 		spinners := []string{"-", "\\", "|", "/"}
 		spin := spinners[(int(elapsed.Seconds()*4))%4]
 		bar = fmt.Sprintf("%-*s", barWidth, spin)
@@ -319,7 +315,6 @@ func formatBar(id string, written, total int64, elapsed time.Duration) string {
 		id, bar, writtenMB, speed)
 }
 
-// throughput formats bytes/sec as a human-readable string.
 func throughput(bytes int64, elapsed time.Duration) string {
 	if elapsed < 100*time.Millisecond || bytes == 0 {
 		return "--"
@@ -335,8 +330,6 @@ func throughput(bytes int64, elapsed time.Duration) string {
 	}
 }
 
-// int64AsFloat extracts a numeric JSON value as int64 (json unmarshals numbers
-// as float64 by default).
 func int64AsFloat(v any) int64 {
 	f, _ := v.(float64)
 	return int64(f)
@@ -361,8 +354,6 @@ func runCmd(c *client, args []string) {
 	}
 	prettyPrint(resp)
 }
-
-// --- HTTP client -----------------------------------------------------------
 
 type client struct{ base string }
 
@@ -419,8 +410,6 @@ func (c *client) raw(method, path string, body io.Reader, ct string) ([]byte, er
 	return out, nil
 }
 
-// --- helpers ---------------------------------------------------------------
-
 func jsonBody(v any) io.Reader {
 	if v == nil {
 		return strings.NewReader("{}")
@@ -468,10 +457,10 @@ Commands:
   healthz                       check daemon liveness
   install <src> [--name N]      install bundle from git source
   update  <name>                re-install from same source (refreshes manifest)
-  pull    <name>                download bundle assets (progress bar)
+  pull    <name>                download bundle assets + setup venv
   list                          list installed bundles
   get <name>                    show bundle metadata
-  rm  <name>                    uninstall bundle
+  rm  <name>                    uninstall bundle (stops worker, removes files)
   load   <name>                 start worker process
   unload <name>                 stop worker process
   describe <name>               show input/output schema
@@ -483,5 +472,6 @@ Flags for install:
   --dir    subdir inside repo that contains the bundle
 
 Environment:
-  GONNX_HOST   daemon address (default http://localhost:7860)`)
+  GONNX_HOST     daemon address      (default http://localhost:7860)
+  GONNXD_SDK_DIR path to sdk/python  (auto-detected from binary location)`)
 }

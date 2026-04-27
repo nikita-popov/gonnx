@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/nikita-popov/gonnx/internal/assets"
 	"github.com/nikita-popov/gonnx/internal/bundle"
+	"github.com/nikita-popov/gonnx/internal/python"
 	"github.com/nikita-popov/gonnx/internal/registry"
 	"github.com/nikita-popov/gonnx/internal/runtime"
 	"github.com/nikita-popov/gonnx/internal/schema"
@@ -35,6 +37,9 @@ type Services struct {
 	Registry  *registry.Registry
 	Installer *source.Installer
 	Manager   *runtime.Manager
+	// SDKDir is the absolute path to sdk/python — installed into every
+	// bundle venv during pull. Empty string disables SDK installation.
+	SDKDir string
 }
 
 // NewRouter builds and returns the HTTP mux for the gonnxd API.
@@ -218,12 +223,32 @@ func handleGetModel(svc Services, name string, w http.ResponseWriter, r *http.Re
 	jsonOK(w, entryToResponse(e))
 }
 
+// handleDeleteModel unloads the worker (if running), removes the registry
+// entry, and deletes the bundle directory from disk.
 func handleDeleteModel(svc Services, name string, w http.ResponseWriter, r *http.Request) {
+	// 1. Stop the worker (best-effort — ignore if not loaded).
 	_ = svc.Manager.Unload(r.Context(), name)
+
+	// 2. Fetch bundleDir before removing the registry entry.
+	e, err := svc.Registry.Get(r.Context(), name)
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 3. Remove registry entry.
 	if err := svc.Registry.Delete(r.Context(), name); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 4. Delete bundle directory (assets + venv + worktree).
+	if e != nil && e.BundleDir != "" {
+		if err := os.RemoveAll(e.BundleDir); err != nil {
+			slog.Warn("rm bundleDir", "dir", e.BundleDir, "err", err)
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -232,11 +257,11 @@ func handleDeleteModel(svc Services, name string, w http.ResponseWriter, r *http
 // Each line is a JSON object (one of):
 //
 //	{"status":"pulling", "asset":"model",   "written":169803776, "total":334118912}
+//	{"status":"venv",    "msg":"creating venv"}
 //	{"status":"done",    "name":"kokoro-tts"}
 //	{"status":"error",   "error":"..."}
 //
 // The response is always 200 OK; errors are encoded as a final NDJSON line.
-// Callers should check for the "error" status in the last event.
 func handlePull(svc Services, name string, w http.ResponseWriter, r *http.Request) {
 	e, err := svc.Registry.Get(r.Context(), name)
 	if errors.Is(err, registry.ErrNotFound) {
@@ -274,30 +299,37 @@ func handlePull(svc Services, name string, w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	if len(plan) == 0 {
-		// All assets already present and verified — nothing to do.
-		emit(map[string]any{"status": "done", "name": name, "skipped": true})
-		return
+	if len(plan) > 0 {
+		progCB := func(id string, written, total int64) {
+			emit(map[string]any{
+				"status":  "pulling",
+				"asset":   id,
+				"written": written,
+				"total":   total,
+			})
+		}
+		if fetchErr := assets.Fetch(r.Context(), plan, &assets.FetchOptions{
+			Progress: progCB,
+		}); fetchErr != nil {
+			emit(map[string]any{"status": "error", "error": fetchErr.Error()})
+			return
+		}
 	}
 
-	progCB := func(id string, written, total int64) {
-		emit(map[string]any{
-			"status":  "pulling",
-			"asset":   id,
-			"written": written,
-			"total":   total,
-		})
-	}
-
-	fetchErr := assets.Fetch(r.Context(), plan, &assets.FetchOptions{
-		Progress: progCB,
+	// Set up the per-bundle Python venv.
+	venvErr := python.Setup(r.Context(), e.BundleDir, python.SetupOptions{
+		SDKDir: svc.SDKDir,
+		Progress: func(msg string) {
+			emit(map[string]any{"status": "venv", "msg": msg})
+		},
 	})
-	if fetchErr != nil {
-		emit(map[string]any{"status": "error", "error": fetchErr.Error()})
+	if venvErr != nil {
+		emit(map[string]any{"status": "error", "error": venvErr.Error()})
 		return
 	}
 
-	emit(map[string]any{"status": "done", "name": name})
+	skipped := len(plan) == 0
+	emit(map[string]any{"status": "done", "name": name, "skipped": skipped})
 }
 
 func handleLoad(svc Services, name string, w http.ResponseWriter, r *http.Request) {
@@ -411,6 +443,7 @@ type modelResponse struct {
 	Name        string `json:"name"`
 	SourceURL   string `json:"sourceUrl"`
 	SourceRef   string `json:"sourceRef"`
+	SourceDir   string `json:"sourceDir"`
 	CommitSHA   string `json:"commitSha"`
 	Digest      string `json:"digest"`
 	BundleDir   string `json:"bundleDir"`
@@ -422,6 +455,7 @@ func entryToResponse(e *registry.Entry) *modelResponse {
 		Name:        e.Name,
 		SourceURL:   e.SourceURL,
 		SourceRef:   e.SourceRef,
+		SourceDir:   e.SourceDir,
 		CommitSHA:   e.CommitSHA,
 		Digest:      e.Digest,
 		BundleDir:   e.BundleDir,
@@ -438,4 +472,11 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
+}
+
+func msDuration(ms int) time.Duration {
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -26,11 +27,12 @@ func main() {
 	addr := flag.String("addr", envOr("GONNXD_ADDR", ":7860"), "TCP address to listen on")
 	stateDir := flag.String("state-dir", envOr("GONNXD_STATE_DIR", defaultStateDir()), "gonnx state directory")
 	logLevel := flag.String("log-level", envOr("GONNXD_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
+	sdkDir := flag.String("sdk-dir", envOr("GONNXD_SDK_DIR", defaultSDKDir()), "path to sdk/python for venv install")
 	flag.Parse()
 
 	setupLogger(*logLevel)
 
-	slog.Info("starting gonnxd", "addr", *addr, "stateDir", *stateDir)
+	slog.Info("starting gonnxd", "addr", *addr, "stateDir", *stateDir, "sdkDir", *sdkDir)
 
 	reg, err := registry.Open(filepath.Join(*stateDir, "registry.db"))
 	if err != nil {
@@ -51,13 +53,14 @@ func main() {
 		Registry:  reg,
 		Installer: inst,
 		Manager:   mgr,
+		SDKDir:    *sdkDir,
 	})
 
 	srv := &http.Server{
 		Addr:         *addr,
 		Handler:      router,
 		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		WriteTimeout: 10 * time.Minute, // pull + venv setup can take a while
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -85,6 +88,36 @@ func main() {
 	}
 }
 
+// defaultSDKDir resolves sdk/python relative to the gonnxd binary location.
+// For system installs GONNXD_SDK_DIR should be set explicitly in the unit file.
+func defaultSDKDir() string {
+	// If the binary is at /usr/local/bin/gonnxd, sdk is not nearby —
+	// fall back to the repo layout (development use).
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	// Resolve symlinks so `go run` paths work too.
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	// Walk up until we find sdk/python or exhaust the path.
+	dir := filepath.Dir(exe)
+	for {
+		candidate := filepath.Join(dir, "sdk", "python")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
 // envOr returns the value of the environment variable key, or fallback if unset/empty.
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -94,8 +127,6 @@ func envOr(key, fallback string) string {
 }
 
 // defaultStateDir returns a sensible per-user state directory.
-// For system installs GONNXD_STATE_DIR is set explicitly so this is only
-// used by developers running gonnxd directly.
 func defaultStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -117,4 +148,5 @@ func setupLogger(level string) {
 		l = slog.LevelInfo
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l})))
+	_ = exec.Command // keep import used
 }
