@@ -367,6 +367,7 @@ func handleLoad(svc Services, name string, w http.ResponseWriter, r *http.Reques
 		Name:              name,
 		BundleDir:         e.BundleDir,
 		ModelPath:         b.ModelPath(),
+		Engine:            m.Runtime.Engine,
 		Providers:         m.Runtime.Providers,
 		HandlerEntrypoint: b.HandlerPath(),
 		HandlerCallable:   m.Handler.Callable,
@@ -480,4 +481,8 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
+}
+
+func msDuration(ms int) time.Duration {
+	return time.Duration(ms) * time.Millisecond
 }
