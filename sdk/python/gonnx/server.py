@@ -23,7 +23,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
-from .context import WorkerContext
+from .context import WorkerContext, _NON_ONNX_ENGINES
 from .types import Request, Response
 
 log = logging.getLogger(__name__)
@@ -174,7 +174,10 @@ def serve(
 	callable_ = _load_callable(entrypoint, callable_name)
 
 	# Eagerly load the ONNX session so startup errors surface before /health.
-	_ = ctx.session
+	# Skip for non-ONNX engines (e.g. torch) — their handlers load the model
+	# themselves inside ModelWorker.load().
+	if ctx.engine not in _NON_ONNX_ENGINES:
+		_ = ctx.session
 
 	manifest = _load_manifest(ctx.bundle_dir)
 
