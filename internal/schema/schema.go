@@ -41,7 +41,6 @@ func Compile(rawSchema map[string]any) (*Validator, error) {
 		return &Validator{}, nil
 	}
 
-	// Round-trip through JSON so the compiler receives a parsed any value.
 	data, err := json.Marshal(rawSchema)
 	if err != nil {
 		return nil, fmt.Errorf("schema marshal: %w", err)
@@ -55,8 +54,6 @@ func Compile(rawSchema map[string]any) (*Validator, error) {
 	const uri = "mem:///input"
 
 	c := jsonschema.NewCompiler()
-	// UseLoader accepts a URLLoader interface; FileLoader satisfies it for
-	// file:// URLs. We do not need http(s) resolution at runtime.
 	c.UseLoader(jsonschema.SchemeURLLoader{
 		"file": jsonschema.FileLoader{},
 	})
@@ -102,22 +99,21 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &ve)
 }
 
-// flattenErrors collects human-readable messages from a ValidationError tree
-// using the library's built-in BasicOutput formatter, which produces a flat
-// list of OutputUnit values — each carrying InstanceLocation and a message.
+// flattenErrors uses BasicOutput() which returns a flat []BasicError list;
+// each BasicError has string fields InstanceLocation and Error.
 func flattenErrors(ve *jsonschema.ValidationError) []string {
-	out := ve.BasicOutput()
-	var msgs []string
-	for _, u := range out.Errors {
-		if u.Error != nil {
-			loc := u.InstanceLocation
-			if loc == "" {
-				loc = "/"
-			}
-			msgs = append(msgs, loc+": "+u.Error.String())
+	basic := ve.BasicOutput()
+	msgs := make([]string, 0, len(basic.Errors))
+	for _, e := range basic.Errors {
+		if e.Error == "" {
+			continue
 		}
+		loc := e.InstanceLocation
+		if loc == "" {
+			loc = "/"
+		}
+		msgs = append(msgs, loc+": "+e.Error)
 	}
-	// Fallback: if BasicOutput produced no sub-errors, use the top-level message.
 	if len(msgs) == 0 {
 		msgs = append(msgs, ve.Error())
 	}
