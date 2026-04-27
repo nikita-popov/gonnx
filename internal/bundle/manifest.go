@@ -5,16 +5,17 @@ const APIVersion = "onnxd/v1alpha1"
 
 // Manifest is the parsed representation of manifest.yaml.
 type Manifest struct {
-	APIVersion string  `yaml:"apiVersion"`
-	Kind       string  `yaml:"kind"`
-	Name       string  `yaml:"name"`
-	Version    string  `yaml:"version"`
-	Source     Source  `yaml:"source"`
-	Runtime    Runtime `yaml:"runtime"`
-	Handler    Handler `yaml:"handler"`
-	Interface  Iface   `yaml:"interface"`
-	Policy     Policy  `yaml:"policy"`
-	Security   Sec     `yaml:"security"`
+	APIVersion string   `yaml:"apiVersion"`
+	Kind       string   `yaml:"kind"`
+	Name       string   `yaml:"name"`
+	Version    string   `yaml:"version"`
+	Source     Source   `yaml:"source"`
+	Runtime    Runtime  `yaml:"runtime"`
+	Handler    Handler  `yaml:"handler"`
+	Interface  Iface    `yaml:"interface"`
+	Policy     Policy   `yaml:"policy"`
+	Security   Sec      `yaml:"security"`
+	Assets     []Asset  `yaml:"assets"`
 }
 
 // Source describes where the bundle was fetched from.
@@ -78,4 +79,53 @@ type FilesystemPolicy struct {
 type Sec struct {
 	AllowUnsigned bool     `yaml:"allowUnsigned"`
 	AllowedHosts  []string `yaml:"allowedHosts"`
+}
+
+// Asset declares a large binary file to be fetched during `gonnxctl pull`.
+// Asset files are not committed to Git; they are downloaded, sha256-verified,
+// and placed at Dest relative to the bundle directory.
+type Asset struct {
+	// ID is a unique symbolic name within the manifest (snake_case).
+	ID string `yaml:"id"`
+
+	// URL is the download location. Supported schemes: https, s3, gs.
+	URL string `yaml:"url"`
+
+	// SHA256 is the expected lowercase hex-encoded SHA-256 digest of the file
+	// contents after any unpacking. Mandatory. Used as a cache key: if the
+	// on-disk file already has this digest, the download is skipped.
+	SHA256 string `yaml:"sha256"`
+
+	// Size is the expected file size in bytes, used only for progress reporting.
+	Size int64 `yaml:"size,omitempty"`
+
+	// Dest is the destination path relative to the bundle directory.
+	// Directory traversal (containing "..") is rejected at validation time.
+	Dest string `yaml:"dest"`
+
+	// Auth describes how to obtain credentials for the download.
+	// Optional; omit for public URLs.
+	Auth *AssetAuth `yaml:"auth,omitempty"`
+
+	// Unpack describes how to extract an archive after download.
+	// Optional; omit for plain files.
+	Unpack *AssetUnpack `yaml:"unpack,omitempty"`
+}
+
+// AssetAuth holds credentials configuration for an asset download.
+// The token value is never stored in the manifest; only the env var name is.
+type AssetAuth struct {
+	// Env is the name of the environment variable whose value is sent
+	// as a Bearer token in the Authorization header.
+	Env string `yaml:"env"`
+}
+
+// AssetUnpack describes how to extract a downloaded archive.
+type AssetUnpack struct {
+	// Format is the archive format: "tar.gz", "tar.bz2", or "zip".
+	Format string `yaml:"format"`
+
+	// Strip is the number of leading path components to strip when extracting,
+	// equivalent to tar --strip-components.
+	Strip int `yaml:"strip,omitempty"`
 }
