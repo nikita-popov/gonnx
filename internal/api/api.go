@@ -24,6 +24,7 @@ import (
 	"github.com/nikita-popov/gonnx/internal/bundle"
 	"github.com/nikita-popov/gonnx/internal/registry"
 	"github.com/nikita-popov/gonnx/internal/runtime"
+	"github.com/nikita-popov/gonnx/internal/schema"
 	"github.com/nikita-popov/gonnx/internal/source"
 )
 
@@ -273,13 +274,51 @@ func handleDescribe(svc Services, name string, w http.ResponseWriter, r *http.Re
 	jsonOK(w, dr)
 }
 
+// handlePredict validates the request body against the bundle's inputSchema
+// (if declared) before forwarding it to the worker.
 func handlePredict(svc Services, name string, w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+
 	var raw json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+
+	// --- schema validation -------------------------------------------------
+	e, err := svc.Registry.Get(r.Context(), name)
+	if errors.Is(err, registry.ErrNotFound) {
+		jsonErr(w, http.StatusNotFound, "model not found: "+name)
+		return
+	}
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	b, err := bundle.Load(e.BundleDir)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "bundle: "+err.Error())
+		return
+	}
+
+	v, err := schema.Compile(b.Manifest.Interface.InputSchema)
+	if err != nil {
+		// Misconfigured schema is a 500 — the operator must fix the bundle.
+		jsonErr(w, http.StatusInternalServerError, "inputSchema compile: "+err.Error())
+		return
+	}
+
+	if err := v.Validate(raw); err != nil {
+		if schema.IsValidationError(err) {
+			jsonErr(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// -----------------------------------------------------------------------
+
 	resp, err := svc.Manager.Predict(r.Context(), name, raw)
 	if err != nil {
 		jsonErr(w, http.StatusBadGateway, err.Error())
