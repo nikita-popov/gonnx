@@ -72,19 +72,51 @@ func main() {
 	}
 }
 
+// installCmd handles: gonnxctl install [flags] <url>
+//
+// flag.FlagSet stops at the first non-flag argument, so
+//
+//	gonnxctl install <url> --dir kokoro-tts
+//
+// would silently ignore --dir.  We work around this by splitting args into
+// flag tokens and positional tokens ourselves, then parse only flag tokens.
+// Both orderings are accepted:
+//
+//	gonnxctl install <url> --dir kokoro-tts
+//	gonnxctl install --dir kokoro-tts <url>
 func installCmd(c *client, args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	name := fs.String("name", "", "override bundle name")
 	ref := fs.String("ref", "", "override git ref")
 	dir := fs.String("dir", "", "override bundle subdir")
-	fs.Parse(args) //nolint:errcheck
 
-	if fs.NArg() == 0 {
+	// Partition: collect flag tokens (--foo / --foo val) separately from
+	// positional tokens so that flag.FlagSet sees only flags.
+	var flagTokens, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagTokens = append(flagTokens, a)
+			// If it looks like --key (without =value), consume next token as value
+			// unless it is itself a flag.
+			isKV := strings.Contains(a, "=")
+			if !isKV && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				flagTokens = append(flagTokens, args[i])
+			}
+		} else {
+			positional = append(positional, a)
+		}
+	}
+
+	fs.Parse(flagTokens) //nolint:errcheck
+
+	if len(positional) == 0 {
 		fmt.Fprintln(os.Stderr, "install requires a source URL")
 		os.Exit(1)
 	}
 	body := map[string]string{
-		"source": fs.Arg(0),
+		"source": positional[0],
 		"name":   *name,
 		"ref":    *ref,
 		"dir":    *dir,
@@ -224,6 +256,15 @@ Commands:
   unload <name>                 stop worker process
   describe <name>               show input/output schema
   run <name> [json]             run inference (reads stdin if no json arg)
+
+Flags for install:
+  --name   override bundle name (default: name from manifest)
+  --ref    override git ref     (default: master)
+  --dir    subdir inside repo that contains the bundle
+
+Both orderings work:
+  gonnxctl install <url> --dir kokoro-tts
+  gonnxctl install --dir kokoro-tts <url>
 
 Environment:
   GONNX_HOST   daemon address (default http://localhost:7860)`)
