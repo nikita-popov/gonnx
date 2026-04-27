@@ -7,12 +7,9 @@ so onnxruntime is not required to run the test suite.
 from __future__ import annotations
 
 import json
-import os
 import socket
-import tempfile
 import threading
 import time
-import urllib.request
 from http.client import HTTPConnection
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -55,6 +52,25 @@ def _request(sock: str, method: str, path: str, body: Any = None) -> tuple[int, 
     return status, data
 
 
+def _wait_connectable(sock_path: str, timeout: float = 5.0, interval: float = 0.05) -> None:
+    """Block until the Unix socket actually accepts connections.
+
+    Probing connect() is the only reliable signal that the server has called
+    listen() and is ready.  Checking os.path.exists() is not sufficient because
+    the socket file is created at bind() time, before listen().
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect(sock_path)
+            s.close()
+            return
+        except OSError:
+            time.sleep(interval)
+    raise RuntimeError(f"server on {sock_path} did not become ready within {timeout}s")
+
+
 def _start_server(sock: str, handler_fn, manifest: dict | None = None) -> threading.Thread:
     """Start a gonnx worker server in a background thread."""
     ctx = WorkerContext(
@@ -79,11 +95,7 @@ def _start_server(sock: str, handler_fn, manifest: dict | None = None) -> thread
 
     t = threading.Thread(target=_target, daemon=True)
     t.start()
-    # Wait until socket appears.
-    for _ in range(50):
-        if os.path.exists(sock):
-            break
-        time.sleep(0.05)
+    _wait_connectable(sock)
     return t
 
 
