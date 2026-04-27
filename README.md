@@ -95,7 +95,10 @@ Ready-to-use bundles live in a separate repository:
 
 | Bundle | Task | Model |
 |--------|------|-------|
-| [resnet50](https://github.com/nikita-popov/examples-gonnx/tree/master/resnet50) | Image classification (ImageNet-1k) | ResNet-50 |
+| [resnet50](https://github.com/nikita-popov/examples-gonnx/tree/master/resnet50) | Image classification (ImageNet-1k) | ResNet-50 ONNX |
+| [kokoro-tts](https://github.com/nikita-popov/examples-gonnx/tree/master/kokoro-tts) | Text-to-speech (9 languages) | Kokoro-82M ONNX |
+| [piper-ru](https://github.com/nikita-popov/examples-gonnx/tree/master/piper-ru) | Text-to-speech (Russian) | Piper Irina medium ONNX |
+| [silero-ru](https://github.com/nikita-popov/examples-gonnx/tree/master/silero-ru) | Text-to-speech (Russian, 5 speakers) | Silero v4 torch.package |
 
 ## Development
 
