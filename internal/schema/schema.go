@@ -9,6 +9,7 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,21 +41,27 @@ func Compile(rawSchema map[string]any) (*Validator, error) {
 		return &Validator{}, nil
 	}
 
-	// Round-trip through JSON to get a json.RawMessage the compiler can read.
+	// Round-trip through JSON so the compiler receives a parsed any value.
 	data, err := json.Marshal(rawSchema)
 	if err != nil {
 		return nil, fmt.Errorf("schema marshal: %w", err)
 	}
 
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("schema unmarshal: %w", err)
+	}
+
+	const uri = "mem:///input"
+
 	c := jsonschema.NewCompiler()
+	// UseLoader accepts a URLLoader interface; FileLoader satisfies it for
+	// file:// URLs. We do not need http(s) resolution at runtime.
 	c.UseLoader(jsonschema.SchemeURLLoader{
-		"https": jsonschema.URLLoader{},
-		"http":  jsonschema.URLLoader{},
+		"file": jsonschema.FileLoader{},
 	})
 
-	// Use an in-memory URL so the compiler can reference the schema by URI.
-	const uri = "mem:///input"
-	if err := c.AddResource(uri, data); err != nil {
+	if err := c.AddResource(uri, doc); err != nil {
 		return nil, fmt.Errorf("schema add resource: %w", err)
 	}
 
@@ -74,8 +81,8 @@ func (v *Validator) Validate(data json.RawMessage) error {
 		return nil
 	}
 
-	var doc any
-	if err := json.Unmarshal(data, &doc); err != nil {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
 		return fmt.Errorf("payload unmarshal: %w", err)
 	}
 
@@ -95,15 +102,24 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &ve)
 }
 
-// flattenErrors recursively collects human-readable messages from a
-// jsonschema.ValidationError tree.
+// flattenErrors collects human-readable messages from a ValidationError tree
+// using the library's built-in BasicOutput formatter, which produces a flat
+// list of OutputUnit values — each carrying InstanceLocation and a message.
 func flattenErrors(ve *jsonschema.ValidationError) []string {
+	out := ve.BasicOutput()
 	var msgs []string
-	if ve.Message != "" {
-		msgs = append(msgs, ve.InstanceLocation+": "+ve.Message)
+	for _, u := range out.Errors {
+		if u.Error != nil {
+			loc := u.InstanceLocation
+			if loc == "" {
+				loc = "/"
+			}
+			msgs = append(msgs, loc+": "+u.Error.String())
+		}
 	}
-	for _, cause := range ve.Causes {
-		msgs = append(msgs, flattenErrors(cause)...)
+	// Fallback: if BasicOutput produced no sub-errors, use the top-level message.
+	if len(msgs) == 0 {
+		msgs = append(msgs, ve.Error())
 	}
 	return msgs
 }
