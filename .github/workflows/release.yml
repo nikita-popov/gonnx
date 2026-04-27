@@ -22,33 +22,135 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: tidy
         run: go mod tidy
 
-      - name: build
+      # ── Go binaries ────────────────────────────────────────────────────
+      - name: build gonnxd
         env:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
-            -o "gonnxd-linux-${{ matrix.goarch }}" ./cmd/gonnxd
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o "gonnxd" ./cmd/gonnxd
+
+      - name: build gonnxctl
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o "gonnxctl" ./cmd/gonnxctl
+
+      # ── Python SDK wheel (arch-independent, built once on amd64) ──────
+      - name: build wheel
+        if: matrix.goarch == 'amd64'
+        run: |
+          pip install -q build
+          python -m build --wheel --outdir dist/ sdk/python
+
+      # ── Assemble tarball ───────────────────────────────────────────────
+      - name: assemble tarball
+        run: |
+          ARCH=${{ matrix.goarch }}
+          TAG=${{ github.ref_name }}
+          TARNAME="gonnx-linux-${ARCH}-${TAG}.tar.gz"
+
+          STAGING="staging-${ARCH}"
+          mkdir -p "${STAGING}"
+
+          cp gonnxd gonnxctl "${STAGING}/"
+          chmod +x "${STAGING}/gonnxd" "${STAGING}/gonnxctl"
+
+          # include wheel only on amd64 build; arm64 reuses same pure-python wheel
+          if [ "$ARCH" = "amd64" ] && ls dist/*.whl 2>/dev/null; then
+            cp dist/*.whl "${STAGING}/"
+          fi
+
+          # generate per-file checksums
+          (cd "${STAGING}" && sha256sum * > checksums.sha256)
+
+          tar -czf "${TARNAME}" -C "${STAGING}" .
+
+          # checksum of the tarball itself
+          sha256sum "${TARNAME}" > "${TARNAME}.sha256"
+
+          echo "TARNAME=${TARNAME}" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gonnxd-linux-${{ matrix.goarch }}
-          path: gonnxd-linux-${{ matrix.goarch }}
+          name: dist-linux-${{ matrix.goarch }}
+          path: |
+            gonnx-linux-${{ matrix.goarch }}-*.tar.gz
+            gonnx-linux-${{ matrix.goarch }}-*.tar.gz.sha256
+
+  # ── wheel for arm64 (reuse the pure-python wheel built on amd64) ─────
+  attach-wheel-arm64:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-amd64
+          path: dist-amd64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-arm64
+          path: dist-arm64
+
+      - name: inject wheel into arm64 tarball
+        run: |
+          TAG=${{ github.ref_name }}
+          AMD64_TAR="dist-amd64/gonnx-linux-amd64-${TAG}.tar.gz"
+          ARM64_TAR="dist-arm64/gonnx-linux-arm64-${TAG}.tar.gz"
+          TARNAME="gonnx-linux-arm64-${TAG}.tar.gz"
+
+          # extract wheel from amd64 tarball
+          mkdir tmp-amd64
+          tar -xzf "${AMD64_TAR}" -C tmp-amd64
+          WHL=$(ls tmp-amd64/*.whl 2>/dev/null | head -1)
+
+          if [ -n "$WHL" ]; then
+            mkdir tmp-arm64
+            tar -xzf "${ARM64_TAR}" -C tmp-arm64
+            cp "$WHL" tmp-arm64/
+            (cd tmp-arm64 && sha256sum * > checksums.sha256)
+            tar -czf "${TARNAME}" -C tmp-arm64 .
+            sha256sum "${TARNAME}" > "${TARNAME}.sha256"
+            cp "${TARNAME}" "${TARNAME}.sha256" dist-arm64/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-arm64-final
+          path: |
+            dist-arm64/gonnx-linux-arm64-*.tar.gz
+            dist-arm64/gonnx-linux-arm64-*.tar.gz.sha256
 
   release:
-    needs: build
+    needs: [build, attach-wheel-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: dist-linux-amd64
           path: dist
-          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-arm64-final
+          path: dist
 
       - name: create release
         uses: softprops/action-gh-release@v2
