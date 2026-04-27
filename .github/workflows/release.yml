@@ -180,13 +180,32 @@ jobs:
                   --pretty=format:"%h %s" \
                   --no-merges)
 
-          # разбить по prefix feat/fix/ci/docs/refactor/chore
+          # известные prefixes — используем для фильтрации Other
+          KNOWN_PREFIXES="feat fix perf refactor ci docs chore"
+
           make_section() {
             local prefix="$1" title="$2"
             local lines
             lines=$(echo "$LOG" | grep -i "^[a-f0-9]\+ ${prefix}" || true)
             if [ -n "$lines" ]; then
               printf '\n**%s**\n' "$title"
+              echo "$lines" | while IFS= read -r line; do
+                sha=$(echo "$line" | cut -d' ' -f1)
+                msg=$(echo "$line" | cut -d' ' -f2-)
+                printf -- '- [`%s`](https://github.com/${{ github.repository }}/commit/%s) %s\n' \
+                  "$sha" "$sha" "$msg"
+              done
+            fi
+          }
+
+          make_other_section() {
+            # коммиты, не соответствующие ни одному из known prefixes
+            local pattern
+            pattern=$(echo "$KNOWN_PREFIXES" | tr ' ' '|')
+            local lines
+            lines=$(echo "$LOG" | grep -iv "^[a-f0-9]\+ \($pattern\)" || true)
+            if [ -n "$lines" ]; then
+              printf '\n**%s**\n' '📦 Other'
               echo "$lines" | while IFS= read -r line; do
                 sha=$(echo "$line" | cut -d' ' -f1)
                 msg=$(echo "$line" | cut -d' ' -f2-)
@@ -205,9 +224,9 @@ jobs:
             make_section 'ci'       '👷 CI / build'
             make_section 'docs'     '📝 Docs'
             make_section 'chore'    '🔧 Chore'
+            make_other_section
           } > changelog.md
 
-          # передаём путь к файлу в следующий step
           echo "path=changelog.md" >> "$GITHUB_OUTPUT"
 
       - name: create release
