@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/nikita-popov/gonnx/internal/python"
 )
 
 // Config holds configuration for the Manager.
@@ -245,19 +247,18 @@ func (m *Manager) checkHealth(ctx context.Context, w *Worker) error {
 	return nil
 }
 
-// buildCmd constructs the worker os/exec.Cmd with the required environment.
+// buildCmd constructs the worker os/exec.Cmd.
+// It uses the bundle's venv python3 if available, otherwise system python3.
 func (m *Manager) buildCmd(req LoadRequest, sock string) *exec.Cmd {
-	// Workers are Python processes launched via the gonnx SDK entry point.
-	// The interpreter is resolved from PATH; future versions may allow
-	// per-bundle virtualenv via GONNX_PYTHON_BIN.
+	pythonBin := python.VenvPython(req.BundleDir)
+
 	args := []string{"-m", "gonnx.worker",
 		"--entrypoint", req.HandlerEntrypoint,
 		"--callable", req.HandlerCallable,
 	}
-	cmd := exec.Command("python3", args...)
+	cmd := exec.Command(pythonBin, args...)
 	cmd.Dir = req.BundleDir
 
-	// Propagate minimal env + worker-specific variables.
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
