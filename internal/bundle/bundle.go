@@ -35,11 +35,11 @@ const manifestFile = "manifest.yaml"
 // Bundle is a validated, loaded model bundle.
 type Bundle struct {
 	// Dir is the absolute path to the bundle directory.
-	Dir      string
+	Dir string
 	// Manifest is the parsed manifest.
 	Manifest *Manifest
 	// Digest is a hex-encoded sha256 over all bundle files.
-	Digest   string
+	Digest string
 }
 
 // Load reads, parses, and verifies a bundle at dir.

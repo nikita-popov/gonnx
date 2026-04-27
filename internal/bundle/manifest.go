@@ -34,8 +34,8 @@ type Runtime struct {
 
 // SessionOptions are forwarded to ONNX Runtime SessionOptions.
 type SessionOptions struct {
-	InterOpThreads        int    `yaml:"interOpThreads"`
-	IntraOpThreads        int    `yaml:"intraOpThreads"`
+	InterOpThreads         int    `yaml:"interOpThreads"`
+	IntraOpThreads         int    `yaml:"intraOpThreads"`
 	GraphOptimizationLevel string `yaml:"graphOptimizationLevel"`
 }
 
@@ -60,11 +60,11 @@ type Iface struct {
 
 // Policy declares operational limits.
 type Policy struct {
-	StartupTimeoutMs  int            `yaml:"startupTimeoutMs"`
-	PredictTimeoutMs  int            `yaml:"predictTimeoutMs"`
-	MaxConcurrency    int            `yaml:"maxConcurrency"`
-	IdleUnloadSeconds int            `yaml:"idleUnloadSeconds"`
-	Network           string         `yaml:"network"`
+	StartupTimeoutMs  int              `yaml:"startupTimeoutMs"`
+	PredictTimeoutMs  int              `yaml:"predictTimeoutMs"`
+	MaxConcurrency    int              `yaml:"maxConcurrency"`
+	IdleUnloadSeconds int              `yaml:"idleUnloadSeconds"`
+	Network           string           `yaml:"network"`
 	Filesystem        FilesystemPolicy `yaml:"filesystem"`
 }
 
