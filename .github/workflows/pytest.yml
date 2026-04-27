@@ -1,0 +1,45 @@
+name: Python SDK
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'sdk/python/**'
+      - '.github/workflows/pytest.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'sdk/python/**'
+      - '.github/workflows/pytest.yml'
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    defaults:
+      run:
+        working-directory: sdk/python
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: sdk/python/pyproject.toml
+
+      - name: Install package + dev deps
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check gonnx tests
+        continue-on-error: true
+
+      - name: Test
+        run: pytest -v --tb=short
