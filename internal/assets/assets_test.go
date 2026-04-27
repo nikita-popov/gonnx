@@ -121,7 +121,7 @@ func TestFetch_Download(t *testing.T) {
 
 	var got int64
 	opts := &assets.FetchOptions{
-		Progress: func(_ string, n int64) { got = n },
+		Progress: func(_ string, written int64, _ int64) { got = written },
 	}
 	if err := assets.Fetch(context.Background(), plan, opts); err != nil {
 		t.Fatal(err)
