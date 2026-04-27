@@ -15,6 +15,11 @@ class Request:
     # HTTP headers forwarded from the original client request.
     headers: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def json(self) -> dict[str, Any]:
+        """Alias for body — convenience for handler authors."""
+        return self.body
+
 
 @dataclass
 class Response:
