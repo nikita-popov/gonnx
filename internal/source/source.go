@@ -109,9 +109,15 @@ func (inst *Installer) syncMirror(ctx context.Context, repoURL, mirrorDir string
 	return inst.fetchMirror(ctx, mirrorDir)
 }
 
-// fetchMirror fetches all refs from origin into an existing bare mirror.
+// fetchMirror fetches all branch and tag refs from origin into an existing
+// bare mirror, explicitly updating packed-refs so that rev-parse always
+// returns the latest upstream commit.
 func (inst *Installer) fetchMirror(ctx context.Context, mirrorDir string) error {
-	return inst.git(ctx, mirrorDir, "fetch", "--prune", "origin")
+	return inst.git(ctx, mirrorDir,
+		"fetch", "--prune", "--force", "origin",
+		"refs/heads/*:refs/heads/*",
+		"refs/tags/*:refs/tags/*",
+	)
 }
 
 // resolveCommit returns the full commit SHA for a ref inside a bare repo.
@@ -180,7 +186,6 @@ func (inst *Installer) mirrorDir(repoURL string) string {
 
 // bundleDir returns the materialized bundle path for a given ref and SHA.
 func (inst *Installer) bundleDir(ref *Ref, sha string) string {
-	// Use a short name derived from the repo URL last path segment.
 	seg := repoSlug(ref.RepoURL)
 	if ref.Subdir != "" {
 		seg = filepath.Base(ref.Subdir)
