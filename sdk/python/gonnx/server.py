@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
 from .context import WorkerContext, _NON_ONNX_ENGINES
+from .model_worker import ModelWorker
 from .types import Request, Response
 
 log = logging.getLogger(__name__)
@@ -173,11 +174,20 @@ def serve(
 	log.info("loading handler %s:%s", entrypoint, callable_name)
 	callable_ = _load_callable(entrypoint, callable_name)
 
-	# Eagerly load the ONNX session so startup errors surface before /health.
-	# Skip for non-ONNX engines (e.g. torch) — their handlers load the model
-	# themselves inside ModelWorker.load().
+	# Eagerly initialise the model before the socket is created so that any
+	# startup error (missing file, bad weights, OOM) crashes the process
+	# immediately — gonnxd sees the exit and reports a clean load failure
+	# instead of a 502 on the first predict.
+	#
+	# For ONNX engines: load the InferenceSession via ctx.session.
+	# For ModelWorker subclasses (torch, custom): call startup() which
+	#   delegates to the user-defined load().
+	# For plain callables: nothing to pre-load.
 	if ctx.engine not in _NON_ONNX_ENGINES:
 		_ = ctx.session
+	elif isinstance(callable_, ModelWorker):
+		log.info("calling ModelWorker.startup()")
+		callable_.startup(ctx)
 
 	manifest = _load_manifest(ctx.bundle_dir)
 
