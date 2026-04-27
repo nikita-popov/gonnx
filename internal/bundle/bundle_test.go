@@ -44,6 +44,11 @@ policy:
   maxConcurrency: 1
   idleUnloadSeconds: 300
   network: disabled
+assets:
+  - id: model
+    url: https://example.com/model.onnx
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    dest: ./model.onnx
 `
 	write(t, dir, "manifest.yaml", manifest)
 	write(t, dir, "model.onnx", "placeholder")
