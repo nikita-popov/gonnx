@@ -1,4 +1,4 @@
-.PHONY: build check clean deps dist fmt test test-py vet
+.PHONY: build check clean deps dist fmt install-sdk test test-py vet
 
 GO       = go
 PYTHON  ?= python3
@@ -10,6 +10,8 @@ VERSION := $(shell printf '%s-dev' "$$(git describe --tags --always --dirty 2>/d
 LDFLAGS := -s -w -X main.version=$(VERSION)
 OS      := linux
 ARCH    ?= amd64
+# Default state dir for dev installs; override with: make install-sdk STATE_DIR=...
+STATE_DIR ?= $(HOME)/.local/share/gonnx
 
 all: deps build
 
@@ -38,6 +40,15 @@ test-py:
 	$(PYTHON) -m pytest -v sdk/python
 
 check: fmt vet test test-py
+
+# Copy sdk/python into STATE_DIR/sdk/python so gonnxd can find it.
+# Usage (dev):    make install-sdk
+# Usage (system): sudo make install-sdk STATE_DIR=/var/lib/gonnx
+install-sdk:
+	@echo "==> installing SDK into $(STATE_DIR)/sdk/python"
+	@mkdir -p "$(STATE_DIR)/sdk/python"
+	@cp -r sdk/python/. "$(STATE_DIR)/sdk/python/"
+	@echo "    done"
 
 # Build a release tarball locally (mirrors what release.yml does in CI).
 # Usage:  make dist ARCH=amd64   or   make dist ARCH=arm64

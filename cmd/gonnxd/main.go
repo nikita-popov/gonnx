@@ -27,12 +27,15 @@ func main() {
 	addr := flag.String("addr", envOr("GONNXD_ADDR", ":7860"), "TCP address to listen on")
 	stateDir := flag.String("state-dir", envOr("GONNXD_STATE_DIR", defaultStateDir()), "gonnx state directory")
 	logLevel := flag.String("log-level", envOr("GONNXD_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
-	sdkDir := flag.String("sdk-dir", envOr("GONNXD_SDK_DIR", defaultSDKDir()), "path to sdk/python for venv install")
 	flag.Parse()
+
+	// SDK lives inside the state directory — no extra flag needed.
+	// install.sh copies sdk/python there during install/upgrade.
+	sdkDir := filepath.Join(*stateDir, "sdk", "python")
 
 	setupLogger(*logLevel)
 
-	slog.Info("starting gonnxd", "addr", *addr, "stateDir", *stateDir, "sdkDir", *sdkDir)
+	slog.Info("starting gonnxd", "addr", *addr, "stateDir", *stateDir, "sdkDir", sdkDir)
 
 	reg, err := registry.Open(filepath.Join(*stateDir, "registry.db"))
 	if err != nil {
@@ -53,18 +56,17 @@ func main() {
 		Registry:  reg,
 		Installer: inst,
 		Manager:   mgr,
-		SDKDir:    *sdkDir,
+		SDKDir:    sdkDir,
 	})
 
 	srv := &http.Server{
 		Addr:         *addr,
 		Handler:      router,
 		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 10 * time.Minute, // pull + venv setup can take a while
+		WriteTimeout: 10 * time.Minute,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown on SIGINT / SIGTERM.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -86,36 +88,6 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
-}
-
-// defaultSDKDir resolves sdk/python relative to the gonnxd binary location.
-// For system installs GONNXD_SDK_DIR should be set explicitly in the unit file.
-func defaultSDKDir() string {
-	// If the binary is at /usr/local/bin/gonnxd, sdk is not nearby —
-	// fall back to the repo layout (development use).
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	// Resolve symlinks so `go run` paths work too.
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return ""
-	}
-	// Walk up until we find sdk/python or exhaust the path.
-	dir := filepath.Dir(exe)
-	for {
-		candidate := filepath.Join(dir, "sdk", "python")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return ""
 }
 
 // envOr returns the value of the environment variable key, or fallback if unset/empty.

@@ -8,7 +8,7 @@
 #   1. Downloads gonnx-linux-<arch>-<version>.tar.gz from GitHub Releases
 #   2. Verifies SHA-256 checksum
 #   3. Installs gonnxd + gonnxctl to /usr/local/bin
-#   4. Installs Python SDK wheel (pip install --break-system-packages or venv)
+#   4. Copies Python SDK wheel into DATA_DIR/sdk/python/ (used by venv setup)
 #   5. Creates system user 'gonnx', directories /var/lib/gonnx /etc/gonnx
 #   6. Writes /etc/gonnx/gonnxd.env (if missing)
 #   7. Installs + enables systemd unit
@@ -22,6 +22,7 @@ REPO="nikita-popov/gonnx"
 SVC="gonnxd"
 RUN_USER="gonnx"
 DATA_DIR="/var/lib/gonnx"
+SDK_DIR="${DATA_DIR}/sdk/python"
 CONF_DIR="/etc/gonnx"
 ENV_FILE="${CONF_DIR}/gonnxd.env"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -116,19 +117,18 @@ WHL="$(ls "${WORKDIR}"/*.whl 2>/dev/null | head -1 || true)"
 
 if [ "${GONNX_USER_INSTALL:-0}" = "1" ] || [ "$(id -u)" -ne 0 ]; then
   INSTALL_DIR="${HOME}/.local/bin"
-  mkdir -p "$INSTALL_DIR"
+  USER_DATA="${HOME}/.local/share/gonnx"
+  USER_SDK="${USER_DATA}/sdk/python"
+  mkdir -p "$INSTALL_DIR" "$USER_SDK"
 
   echo "[user install] ${VERSION} (linux/${ARCH}) -> ${INSTALL_DIR}"
   install -m 755 "$GONNXD"   "${INSTALL_DIR}/gonnxd"
   install -m 755 "$GONNXCTL" "${INSTALL_DIR}/gonnxctl"
 
   if [ -n "$WHL" ]; then
-    echo "==> installing Python SDK wheel"
-    if python3 -m pip install -q --user "$WHL" 2>/dev/null; then
-      echo "    sdk wheel installed (--user)"
-    else
-      echo "    warn: pip install failed — install manually: pip install ${WHL}"
-    fi
+    echo "==> unpacking Python SDK into ${USER_SDK}"
+    python3 -m pip install -q --no-deps --target "$USER_SDK" "$WHL" \
+      || echo "    warn: pip install failed — install manually"
   fi
 
   echo "done: gonnxd + gonnxctl installed to ${INSTALL_DIR}"
@@ -151,36 +151,36 @@ install -m 755 "$GONNXD"   /usr/local/bin/gonnxd
 install -m 755 "$GONNXCTL" /usr/local/bin/gonnxctl
 echo "    binaries -> /usr/local/bin/{gonnxd,gonnxctl}"
 
-# 2. Python SDK wheel
+# 2. dedicated system user (no home directory, no login shell)
+if ! id "$RUN_USER" >/dev/null 2>&1; then
+  useradd --system --no-create-home --home-dir "$DATA_DIR" \
+    --shell /sbin/nologin --comment "gonnx daemon" "$RUN_USER"
+  echo "    user     -> $RUN_USER (system, home=$DATA_DIR)"
+fi
+
+# 3. data and config directories
+mkdir -p "$DATA_DIR" "$SDK_DIR" "$CONF_DIR"
+chown -R "${RUN_USER}:${RUN_USER}" "$DATA_DIR"
+chmod 750 "$DATA_DIR"
+echo "    data     -> $DATA_DIR"
+echo "    sdk      -> $SDK_DIR"
+echo "    config   -> $CONF_DIR"
+
+# 4. Python SDK — unpack wheel into SDK_DIR so each bundle venv can pip-install
+#    it from there without touching the system Python.
 if [ -n "$WHL" ]; then
-  echo "==> installing Python SDK wheel"
-  # try pip with --break-system-packages (Debian/Ubuntu 23.04+)
-  # fall back to plain pip, then warn
-  if python3 -m pip install -q --break-system-packages "$WHL" 2>/dev/null; then
-    echo "    sdk wheel installed (system pip)"
-  elif python3 -m pip install -q "$WHL" 2>/dev/null; then
-    echo "    sdk wheel installed (pip)"
-  else
-    echo "    warn: could not install SDK wheel automatically."
-    echo "    Install manually: pip install ${WHL}"
-  fi
+  echo "==> copying Python SDK wheel into ${SDK_DIR}"
+  # Keep the wheel file; venv.go does: pip install <SDKDir>
+  # We store the unpacked package so pip install <dir> works (PEP 517 src layout).
+  cp "$WHL" "${SDK_DIR}/"
+  # Also write a minimal pyproject.toml stub so pip treats the dir as a package
+  # when invoked as: pip install /var/lib/gonnx/sdk/python
+  # The actual pyproject.toml shipped in the wheel takes precedence; this is a
+  # safety net in case the wheel is not present.
+  echo "    sdk wheel -> ${SDK_DIR}/$(basename "$WHL")"
 else
   echo "    warn: no .whl found in tarball — SDK not installed"
 fi
-
-# 3. dedicated system user (no home directory)
-if ! id "$RUN_USER" >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /sbin/nologin \
-    --comment "gonnx daemon" "$RUN_USER"
-  echo "    user     -> $RUN_USER (system)"
-fi
-
-# 4. data and config directories
-mkdir -p "$DATA_DIR" "$CONF_DIR"
-chown "${RUN_USER}:${RUN_USER}" "$DATA_DIR"
-chmod 750 "$DATA_DIR"
-echo "    data     -> $DATA_DIR"
-echo "    config   -> $CONF_DIR"
 
 # 5. env config (never overwrite on upgrades)
 if [ ! -f "$ENV_FILE" ]; then
@@ -188,7 +188,7 @@ if [ ! -f "$ENV_FILE" ]; then
 # gonnxd environment configuration
 # Sourced by the systemd unit as EnvironmentFile.
 
-# State directory (registry, worker sockets). Must be writable by '${RUN_USER}'.
+# State directory (registry, bundles, sdk, worker sockets).
 GONNXD_STATE_DIR=${DATA_DIR}
 
 # TCP listen address
@@ -196,12 +196,6 @@ GONNXD_STATE_DIR=${DATA_DIR}
 
 # Log level: debug | info | warn | error
 #GONNXD_LOG_LEVEL=info
-
-# Execution provider: cpu | cuda | dml
-#GONNXD_PROVIDER=cpu
-
-# Max concurrent worker processes
-#GONNXD_MAX_WORKERS=1
 EOF
   chmod 640 "$ENV_FILE"
   chown "root:${RUN_USER}" "$ENV_FILE"
@@ -223,6 +217,8 @@ Type=simple
 User=${RUN_USER}
 Group=${RUN_USER}
 EnvironmentFile=-${ENV_FILE}
+# Set HOME explicitly so git/pip never try to access /home/gonnx
+Environment=HOME=${DATA_DIR}
 ExecStart=/usr/local/bin/gonnxd
 Restart=on-failure
 RestartSec=5s
