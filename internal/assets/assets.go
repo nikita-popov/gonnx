@@ -50,6 +50,11 @@ func Plan(m *bundle.Manifest, bundleDir string) ([]Item, error) {
 		}
 		seen[a.ID] = struct{}{}
 
+		// Normalise sha256 to exactly 64 lower-case hex chars (left-pad with
+		// zeros). Tools like sha256sum omit leading zeros, so e.g. a hash
+		// starting with "0" may appear as 63 characters in the manifest.
+		a.SHA256 = fmt.Sprintf("%064s", strings.ToLower(a.SHA256))
+
 		destAbs := filepath.Join(bundleDir, a.Dest)
 		miss, err := cacheMiss(destAbs, a.SHA256)
 		if err != nil {
@@ -106,7 +111,9 @@ func CheckPresent(m *bundle.Manifest, bundleDir string) error {
 	var missing []string
 	for _, a := range m.Assets {
 		destAbs := filepath.Join(bundleDir, a.Dest)
-		miss, err := cacheMiss(destAbs, a.SHA256)
+		// Normalise before comparison (same logic as Plan).
+		norm := fmt.Sprintf("%064s", strings.ToLower(a.SHA256))
+		miss, err := cacheMiss(destAbs, norm)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s (%v)", a.ID, err))
 			continue
@@ -156,10 +163,10 @@ func validateAsset(a bundle.Asset, bundleDir string) error {
 	if a.URL == "" {
 		return errors.New("url is required")
 	}
-	if len(a.SHA256) != 64 {
-		return fmt.Errorf("sha256 must be 64 hex characters, got %d", len(a.SHA256))
+	if l := len(a.SHA256); l == 0 || l > 64 {
+		return fmt.Errorf("sha256 must be 1-64 hex characters, got %d", l)
 	}
-	if _, err := hex.DecodeString(a.SHA256); err != nil {
+	if _, err := hex.DecodeString(fmt.Sprintf("%064s", strings.ToLower(a.SHA256))); err != nil {
 		return fmt.Errorf("sha256 is not valid hex: %w", err)
 	}
 	if a.Dest == "" {
