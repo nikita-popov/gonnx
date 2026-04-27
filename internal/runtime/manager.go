@@ -35,9 +35,12 @@ type LoadRequest struct {
 	Name string
 	// BundleDir is the absolute path to the materialized bundle.
 	BundleDir string
-	// ModelPath is the absolute path to the .onnx file.
+	// ModelPath is the absolute path to the model file (.onnx, .pt, etc.).
 	ModelPath string
-	// Providers is the ordered list of ONNX execution providers.
+	// Engine is the value of runtime.engine from the manifest (e.g. "onnxruntime", "torch").
+	// Passed to the worker as GONNX_ENGINE so the SDK can skip onnxruntime for non-ONNX backends.
+	Engine string
+	// Providers is the ordered list of execution providers.
 	Providers []string
 	// HandlerEntrypoint is the path to the handler script.
 	HandlerEntrypoint string
@@ -295,6 +298,11 @@ func (m *Manager) buildCmd(req LoadRequest, sock string) *exec.Cmd {
 	cmd := exec.Command(pythonBin, args...)
 	cmd.Dir = req.BundleDir
 
+	engine := req.Engine
+	if engine == "" {
+		engine = "onnxruntime"
+	}
+
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
@@ -302,6 +310,7 @@ func (m *Manager) buildCmd(req LoadRequest, sock string) *exec.Cmd {
 		"GONNX_MODEL_PATH=" + req.ModelPath,
 		"GONNX_BUNDLE_DIR=" + req.BundleDir,
 		"GONNX_PROVIDERS=" + joinProviders(req.Providers),
+		"GONNX_ENGINE=" + engine,
 	}
 	env = append(env, req.Env...)
 	cmd.Env = env
@@ -312,7 +321,7 @@ func (m *Manager) buildCmd(req LoadRequest, sock string) *exec.Cmd {
 	return cmd
 }
 
-// joinProviders concatenates ONNX provider names with a comma.
+// joinProviders concatenates execution provider names with a comma.
 func joinProviders(pp []string) string {
 	if len(pp) == 0 {
 		return "CPUExecutionProvider"
