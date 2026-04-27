@@ -11,17 +11,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
-            ext: .exe
+          - goarch: amd64
+          - goarch: arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -31,17 +22,17 @@ jobs:
 
       - name: build
         env:
-          GOOS: ${{ matrix.goos }}
+          GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          out="gonnxd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out" ./cmd/gonnxd
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o "gonnxd-linux-${{ matrix.goarch }}" ./cmd/gonnxd
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gonnxd-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: gonnxd-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: gonnxd-linux-${{ matrix.goarch }}
+          path: gonnxd-linux-${{ matrix.goarch }}
 
   release:
     needs: build
