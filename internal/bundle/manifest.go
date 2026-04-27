@@ -5,17 +5,46 @@ const APIVersion = "onnxd/v1alpha1"
 
 // Manifest is the parsed representation of manifest.yaml.
 type Manifest struct {
-	APIVersion string  `yaml:"apiVersion"`
-	Kind       string  `yaml:"kind"`
-	Name       string  `yaml:"name"`
-	Version    string  `yaml:"version"`
-	Source     Source  `yaml:"source"`
-	Runtime    Runtime `yaml:"runtime"`
-	Handler    Handler `yaml:"handler"`
-	Interface  Iface   `yaml:"interface"`
-	Policy     Policy  `yaml:"policy"`
-	Security   Sec     `yaml:"security"`
-	Assets     []Asset `yaml:"assets"`
+	APIVersion string     `yaml:"apiVersion"`
+	Kind       string     `yaml:"kind"`
+	Name       string     `yaml:"name"`
+	Version    string     `yaml:"version"`
+	Source     Source     `yaml:"source"`
+	Runtime    Runtime    `yaml:"runtime"`
+	Handler    Handler    `yaml:"handler"`
+	Interface  Iface      `yaml:"interface"`
+	Policy     Policy     `yaml:"policy"`
+	Security   Sec        `yaml:"security"`
+	Assets     []Asset    `yaml:"assets"`
+	System     SystemDeps `yaml:"system"`
+}
+
+// SystemDeps groups host-level dependency declarations.
+type SystemDeps struct {
+	Deps []SystemDep `yaml:"deps"`
+}
+
+// SystemDep describes a single system-level dependency (binary, shared
+// library, etc.) that must be present on the host for the bundle to work.
+//
+// Example manifest fragment:
+//
+//	system:
+//	  deps:
+//	    - name: espeak-ng
+//	      check: "espeak-ng --version"
+//	      hint: "apt install espeak-ng"
+type SystemDep struct {
+	// Name is a human-readable label for the dependency.
+	Name string `yaml:"name"`
+
+	// Check is a shell command whose exit code indicates presence (0 = ok).
+	// Example: "espeak-ng --version"
+	Check string `yaml:"check"`
+
+	// Hint is an optional installation suggestion shown in warnings/errors.
+	// Example: "apt install espeak-ng"
+	Hint string `yaml:"hint"`
 }
 
 // Source describes where the bundle was fetched from.

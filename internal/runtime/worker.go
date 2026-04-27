@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type WorkerState int
 const (
 	StateStarting WorkerState = iota
 	StateReady
+	StateDegraded // loaded but missing system deps; predict returns actionable error
 	StateStopped
 	StateFailed
 )
@@ -36,6 +38,8 @@ func (s WorkerState) String() string {
 		return "starting"
 	case StateReady:
 		return "ready"
+	case StateDegraded:
+		return "degraded"
 	case StateStopped:
 		return "stopped"
 	case StateFailed:
@@ -51,6 +55,8 @@ type Worker struct {
 	BundleName string
 	// SocketPath is the Unix domain socket the worker listens on.
 	SocketPath string
+	// DegradedReasons lists unmet system dependencies when state==StateDegraded.
+	DegradedReasons []string
 
 	cmd    *exec.Cmd
 	client *http.Client
@@ -97,4 +103,11 @@ func socketPath(stateDir, name string) string {
 // ensureSocketDir creates the sockets directory if needed.
 func ensureSocketDir(stateDir string) error {
 	return os.MkdirAll(socketDir(stateDir), 0o700)
+}
+
+// degradedMsg builds the error message shown when predict is called on a
+// degraded worker.
+func degradedMsg(reasons []string) string {
+	return "worker is degraded: missing system dependencies: " +
+		strings.Join(reasons, "; ")
 }

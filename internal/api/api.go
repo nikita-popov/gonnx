@@ -30,6 +30,7 @@ import (
 	"github.com/nikita-popov/gonnx/internal/runtime"
 	"github.com/nikita-popov/gonnx/internal/schema"
 	"github.com/nikita-popov/gonnx/internal/source"
+	"github.com/nikita-popov/gonnx/internal/sysdeps"
 )
 
 // Services groups the dependencies injected into the HTTP handlers.
@@ -258,6 +259,7 @@ func handleDeleteModel(svc Services, name string, w http.ResponseWriter, r *http
 //
 //	{"status":"pulling", "asset":"model",   "written":169803776, "total":334118912}
 //	{"status":"venv",    "msg":"creating venv"}
+//	{"status":"warn",    "msg":"missing system dependency: espeak-ng (hint: apt install espeak-ng)"}
 //	{"status":"done",    "name":"kokoro-tts"}
 //	{"status":"error",   "error":"..."}
 //
@@ -328,6 +330,11 @@ func handlePull(svc Services, name string, w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Warn about missing system dependencies (non-fatal).
+	for _, msg := range sysdeps.Warnings(b.Manifest.System.Deps) {
+		emit(map[string]any{"status": "warn", "msg": msg})
+	}
+
 	skipped := len(plan) == 0
 	emit(map[string]any{"status": "done", "name": name, "skipped": skipped})
 }
@@ -364,6 +371,7 @@ func handleLoad(svc Services, name string, w http.ResponseWriter, r *http.Reques
 		HandlerEntrypoint: b.HandlerPath(),
 		HandlerCallable:   m.Handler.Callable,
 		StartupTimeout:    msDuration(m.Policy.StartupTimeoutMs),
+		SystemDeps:        m.System.Deps,
 	}); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return

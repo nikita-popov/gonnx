@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/nikita-popov/gonnx/internal/bundle"
 	"github.com/nikita-popov/gonnx/internal/python"
+	"github.com/nikita-popov/gonnx/internal/sysdeps"
 )
 
 // Config holds configuration for the Manager.
@@ -44,6 +47,10 @@ type LoadRequest struct {
 	StartupTimeout time.Duration
 	// Env holds extra environment variables for the worker process.
 	Env []string
+	// SystemDeps is the list of system dependencies declared in the manifest.
+	// Manager checks them before starting the process and sets StateDegraded
+	// if any are missing, instead of refusing to load.
+	SystemDeps []bundle.SystemDep
 }
 
 // Manager supervises worker processes.
@@ -70,12 +77,28 @@ func NewManager(cfg Config) *Manager {
 // Load starts a worker process for the given bundle.
 // It blocks until the worker is healthy or the startup timeout expires.
 // If a worker for this bundle is already loaded, Load is a no-op.
+//
+// If system dependencies declared in req.SystemDeps are missing, the worker
+// is started normally but marked as StateDegraded. Subsequent Predict calls
+// will return an actionable error message instead of forwarding the request.
 func (m *Manager) Load(ctx context.Context, req LoadRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if w, ok := m.workers[req.Name]; ok && w.state == StateReady {
 		return nil
+	}
+
+	// Check system dependencies before starting the process.
+	var degradedReasons []string
+	if missing := sysdeps.Check(req.SystemDeps); len(missing) > 0 {
+		for _, dep := range missing {
+			degradedReasons = append(degradedReasons, dep.String())
+		}
+		slog.Warn("worker has missing system dependencies",
+			"worker", req.Name,
+			"missing", degradedReasons,
+		)
 	}
 
 	if err := ensureSocketDir(m.cfg.StateDir); err != nil {
@@ -105,7 +128,12 @@ func (m *Manager) Load(ctx context.Context, req LoadRequest) error {
 		return fmt.Errorf("runtime: worker %q failed health check: %w", req.Name, err)
 	}
 
-	w.state = StateReady
+	if len(degradedReasons) > 0 {
+		w.state = StateDegraded
+		w.DegradedReasons = degradedReasons
+	} else {
+		w.state = StateReady
+	}
 	return nil
 }
 
@@ -141,6 +169,9 @@ func (m *Manager) Unload(ctx context.Context, name string) error {
 
 // Predict forwards a JSON predict request to the named worker and returns
 // the raw JSON response body.
+//
+// If the worker is in StateDegraded, Predict returns an actionable error
+// listing the missing system dependencies instead of forwarding the request.
 func (m *Manager) Predict(ctx context.Context, name string, reqBody []byte) ([]byte, error) {
 	m.mu.RLock()
 	w, ok := m.workers[name]
@@ -148,7 +179,12 @@ func (m *Manager) Predict(ctx context.Context, name string, reqBody []byte) ([]b
 	if !ok {
 		return nil, fmt.Errorf("runtime: worker %q not loaded", name)
 	}
-	if w.state != StateReady {
+	switch w.state {
+	case StateDegraded:
+		return nil, fmt.Errorf("runtime: %s", degradedMsg(w.DegradedReasons))
+	case StateReady:
+		// ok
+	default:
 		return nil, fmt.Errorf("runtime: worker %q is %s", name, w.state)
 	}
 
