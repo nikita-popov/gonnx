@@ -99,19 +99,17 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &ve)
 }
 
-// flattenErrors recursively walks the ValidationError tree.
+// flattenErrors recursively walks the ValidationError tree and collects
+// human-readable messages.
 //
-// In v6.0.1 the only stable public surface for a human-readable message is
-// ve.Error() (implements error). InstanceLocation is []string — we join it
-// with '/' to form a JSON Pointer. Leaf nodes (no Causes) carry the actual
-// constraint message; intermediate nodes just group them.
+// We deliberately avoid ErrorKind.LocalizedString because it requires a
+// non-nil *golang.org/x/text/message.Printer — passing nil panics inside
+// the library (v6.0.1). ve.Error() is the stable, safe alternative.
 func flattenErrors(ve *jsonschema.ValidationError) []string {
 	if len(ve.Causes) == 0 {
 		loc := "/" + strings.Join(ve.InstanceLocation, "/")
-		msg := ve.ErrorKind.LocalizedString(nil)
-		if msg == "" {
-			msg = ve.Error()
-		}
+		// Strip the redundant "jsonschema: " prefix that ve.Error() adds.
+		msg := strings.TrimPrefix(ve.Error(), "jsonschema: ")
 		return []string{loc + ": " + msg}
 	}
 	var msgs []string
