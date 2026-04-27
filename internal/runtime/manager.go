@@ -203,7 +203,7 @@ func (m *Manager) UnloadAll(ctx context.Context) {
 }
 
 // waitHealthy polls the worker's /health endpoint until it responds 200
-// or the timeout expires.
+// or the timeout expires. Returns immediately if the worker process exits.
 func (m *Manager) waitHealthy(ctx context.Context, w *Worker, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -217,6 +217,10 @@ func (m *Manager) waitHealthy(ctx context.Context, w *Worker, timeout time.Durat
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			// Early exit: process already terminated (e.g. ImportError, OOM).
+			if w.cmd.ProcessState != nil {
+				return fmt.Errorf("worker exited unexpectedly: %s", w.cmd.ProcessState)
+			}
 			if err := m.checkHealth(ctx, w); err == nil {
 				return nil
 			}
