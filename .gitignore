@@ -31,3 +31,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+
+# Python
+.venv/
+sdk/python/gonnx.egg-info/

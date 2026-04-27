@@ -3,12 +3,12 @@
 //
 // Workflow:
 //
-//	 plan, err := assets.Plan(manifest, bundleDir)
-//	 if err != nil { ... }
-//	 for _, item := range plan {
-//	     log.Printf("fetching %s (%d bytes)", item.Asset.ID, item.Asset.Size)
-//	 }
-//	 if err := assets.Fetch(ctx, plan, nil); err != nil { ... }
+//	plan, err := assets.Plan(manifest, bundleDir)
+//	if err != nil { ... }
+//	for _, item := range plan {
+//	    log.Printf("fetching %s (%d bytes)", item.Asset.ID, item.Asset.Size)
+//	}
+//	if err := assets.Fetch(ctx, plan, nil); err != nil { ... }
 //
 // A Plan contains only the assets that are absent or whose sha256 does not
 // match the on-disk file. Assets that are already correct are excluded.

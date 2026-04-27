@@ -5,17 +5,17 @@ const APIVersion = "onnxd/v1alpha1"
 
 // Manifest is the parsed representation of manifest.yaml.
 type Manifest struct {
-	APIVersion string   `yaml:"apiVersion"`
-	Kind       string   `yaml:"kind"`
-	Name       string   `yaml:"name"`
-	Version    string   `yaml:"version"`
-	Source     Source   `yaml:"source"`
-	Runtime    Runtime  `yaml:"runtime"`
-	Handler    Handler  `yaml:"handler"`
-	Interface  Iface    `yaml:"interface"`
-	Policy     Policy   `yaml:"policy"`
-	Security   Sec      `yaml:"security"`
-	Assets     []Asset  `yaml:"assets"`
+	APIVersion string  `yaml:"apiVersion"`
+	Kind       string  `yaml:"kind"`
+	Name       string  `yaml:"name"`
+	Version    string  `yaml:"version"`
+	Source     Source  `yaml:"source"`
+	Runtime    Runtime `yaml:"runtime"`
+	Handler    Handler `yaml:"handler"`
+	Interface  Iface   `yaml:"interface"`
+	Policy     Policy  `yaml:"policy"`
+	Security   Sec     `yaml:"security"`
+	Assets     []Asset `yaml:"assets"`
 }
 
 // Source describes where the bundle was fetched from.

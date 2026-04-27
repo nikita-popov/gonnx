@@ -123,7 +123,6 @@ func installCmd(c *client, args []string) {
 // Output example (one overwritten line per asset):
 //
 //	model   [=============>       ]  66%  221.2 MB / 334.1 MB  14.3 MB/s
-//
 func pullCmd(c *client, name string) {
 	req, err := http.NewRequest(http.MethodPost,
 		c.base+"/v1/models/"+name+":pull", nil)
