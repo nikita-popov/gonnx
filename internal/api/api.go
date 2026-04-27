@@ -473,10 +473,3 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
 }
-
-func msDuration(ms int) time.Duration {
-	if ms <= 0 {
-		return 0
-	}
-	return time.Duration(ms) * time.Millisecond
-}
