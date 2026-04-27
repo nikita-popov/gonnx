@@ -72,7 +72,8 @@ func Compile(rawSchema map[string]any) (*Validator, error) {
 func (v *Validator) Validate(data json.RawMessage) error {
 	if v.sch == nil {
 		return nil
-	}\n
+	}
+
 	var doc any
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("payload unmarshal: %w", err)
