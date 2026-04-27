@@ -1,0 +1,3 @@
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6c4r4School2Nj8Hxa5d2ARoref0jKnkue0scd0pyCY=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJE68+0=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
