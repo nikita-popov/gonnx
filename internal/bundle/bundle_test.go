@@ -1,6 +1,7 @@
 package bundle_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,13 +84,52 @@ func TestLoad_MissingManifest(t *testing.T) {
 	}
 }
 
+// TestLoad_MissingModelFile verifies that Load succeeds even when model.onnx
+// is absent: asset files are downloaded lazily by `gonnxctl pull` and are
+// NOT required by Load. Use CheckAssets to gate worker startup instead.
 func TestLoad_MissingModelFile(t *testing.T) {
 	dir := makeBundle(t, func(dir string) {
 		os.Remove(filepath.Join(dir, "model.onnx"))
 	})
 	_, err := bundle.Load(dir)
+	if err != nil {
+		t.Fatalf("Load should succeed without asset files, got: %v", err)
+	}
+}
+
+// TestCheckAssets_MissingModelFile verifies that CheckAssets returns a
+// MissingAssetsError when a declared asset dest is absent.
+func TestCheckAssets_MissingModelFile(t *testing.T) {
+	dir := makeBundle(t, func(dir string) {
+		os.Remove(filepath.Join(dir, "model.onnx"))
+	})
+	b, err := bundle.Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected Load error: %v", err)
+	}
+	err = bundle.CheckAssets(dir, b.Manifest)
 	if err == nil {
-		t.Fatal("expected error for missing model file")
+		t.Fatal("expected MissingAssetsError, got nil")
+	}
+	var mae *bundle.MissingAssetsError
+	if !errors.As(err, &mae) {
+		t.Fatalf("expected *MissingAssetsError, got %T: %v", err, err)
+	}
+	if len(mae.Missing) == 0 {
+		t.Error("MissingAssetsError.Missing should not be empty")
+	}
+}
+
+// TestCheckAssets_OK verifies that CheckAssets returns nil when all
+// declared asset dest files exist on disk.
+func TestCheckAssets_OK(t *testing.T) {
+	dir := makeBundle(t, nil) // model.onnx written by makeBundle
+	b, err := bundle.Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected Load error: %v", err)
+	}
+	if err := bundle.CheckAssets(dir, b.Manifest); err != nil {
+		t.Fatalf("unexpected CheckAssets error: %v", err)
 	}
 }
 
