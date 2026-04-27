@@ -1,0 +1,4 @@
+# ImageNet-1k labels — replace with real labels file
+tench
+goldfish
+great white shark
