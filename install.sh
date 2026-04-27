@@ -6,7 +6,7 @@
 #
 # What this script does:
 #   1. Downloads the latest gonnxd binary for linux/amd64 or linux/arm64
-#   2. Creates a dedicated system user 'gonnx' (no login shell)
+#   2. Creates a dedicated system user 'gonnx' (no login shell, no home dir)
 #   3. Creates directories: /var/lib/gonnx  /etc/gonnx
 #   4. Writes a default env config to /etc/gonnx/gonnxd.env  (if missing)
 #   5. Installs a systemd unit and enables+starts the service
@@ -26,7 +26,7 @@ ENV_FILE="${CONF_DIR}/gonnxd.env"
 SYSTEMD_DIR="/etc/systemd/system"
 UNIT_FILE="${SYSTEMD_DIR}/${SVC}.service"
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -48,7 +48,7 @@ fetch_file() {
   fi
 }
 
-# ── detect OS / arch ─────────────────────────────────────────────────────────
+# ── detect OS / arch ──────────────────────────────────────────────────────────
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 [ "$OS" = "linux" ] || die "unsupported OS: $OS"
@@ -60,7 +60,7 @@ case "$ARCH" in
   *) die "unsupported architecture: $ARCH" ;;
 esac
 
-# ── resolve latest release ───────────────────────────────────────────────────
+# ── resolve latest release ────────────────────────────────────────────────────
 
 API="https://api.github.com/repos/${REPO}/releases/latest"
 RELEASE_JSON="$(fetch "$API")"
@@ -107,46 +107,48 @@ chmod +x "$TMPFILE"
 mv "$TMPFILE" "$DEST"
 echo "    binary   -> $DEST"
 
-# 2. dedicated user
+# 2. dedicated system user (no home directory)
 if ! id "$RUN_USER" >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /sbin/nologin \
     --comment "gonnx daemon" "$RUN_USER"
   echo "    user     -> $RUN_USER (system)"
 fi
 
-# 3. directories
+# 3. data and config directories (owned by gonnx user)
 mkdir -p "$DATA_DIR" "$CONF_DIR"
 chown "${RUN_USER}:${RUN_USER}" "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 echo "    data     -> $DATA_DIR"
 echo "    config   -> $CONF_DIR"
 
-# 4. default env config (never overwrite existing)
+# 4. env config — never overwrite existing file on upgrades
 if [ ! -f "$ENV_FILE" ]; then
-  cat > "$ENV_FILE" <<'EOF'
+  cat > "$ENV_FILE" <<EOF
 # gonnxd environment configuration
+# This file is sourced by the systemd unit as EnvironmentFile.
 # Uncomment and adjust as needed.
 
-# TCP address to listen on (default: 127.0.0.1:11434)
-#GONNXD_ADDR=127.0.0.1:11434
+# State directory (models registry, worker sockets).
+# Must be writable by the '${RUN_USER}' user.
+GONNXD_STATE_DIR=${DATA_DIR}
 
-# Directory where model bundles are stored
-#GONNXD_MODELS_DIR=/var/lib/gonnx/models
+# TCP address to listen on.
+#GONNXD_ADDR=127.0.0.1:7860
 
-# Log level: debug | info | warn | error  (default: info)
+# Log level: debug | info | warn | error
 #GONNXD_LOG_LEVEL=info
 
-# Execution provider: cpu | cuda | dml  (default: cpu)
+# Execution provider: cpu | cuda | dml
 #GONNXD_PROVIDER=cpu
 
-# Max concurrent worker processes (default: 1)
+# Max concurrent worker processes
 #GONNXD_MAX_WORKERS=1
 EOF
   chmod 640 "$ENV_FILE"
   chown "root:${RUN_USER}" "$ENV_FILE"
   echo "    env      -> $ENV_FILE"
 else
-  echo "    env      -> $ENV_FILE (already exists, skipped)"
+  echo "    env      -> $ENV_FILE (exists, skipped)"
 fi
 
 # 5. systemd unit
@@ -162,7 +164,7 @@ Type=simple
 User=${RUN_USER}
 Group=${RUN_USER}
 EnvironmentFile=-${ENV_FILE}
-ExecStart=/usr/local/bin/${BIN} serve
+ExecStart=/usr/local/bin/${BIN}
 Restart=on-failure
 RestartSec=5s
 
@@ -197,7 +199,7 @@ EOF
   fi
 else
   echo "    systemd not found — skipping service setup"
-  echo "    run manually: ${DEST} serve"
+  echo "    run manually: ${DEST}"
 fi
 
 echo ""

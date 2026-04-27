@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	gonnxd [--addr :7860] [--state-dir ~/.local/share/gonnx]
+//	gonnxd [--addr :7860] [--state-dir /var/lib/gonnx]
 package main
 
 import (
@@ -23,9 +23,9 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":7860", "TCP address to listen on")
-	stateDir := flag.String("state-dir", defaultStateDir(), "gonnx state directory")
-	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
+	addr := flag.String("addr", envOr("GONNXD_ADDR", ":7860"), "TCP address to listen on")
+	stateDir := flag.String("state-dir", envOr("GONNXD_STATE_DIR", defaultStateDir()), "gonnx state directory")
+	logLevel := flag.String("log-level", envOr("GONNXD_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	flag.Parse()
 
 	setupLogger(*logLevel)
@@ -85,6 +85,17 @@ func main() {
 	}
 }
 
+// envOr returns the value of the environment variable key, or fallback if unset/empty.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// defaultStateDir returns a sensible per-user state directory.
+// For system installs GONNXD_STATE_DIR is set explicitly so this is only
+// used by developers running gonnxd directly.
 func defaultStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
