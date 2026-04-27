@@ -1,16 +1,26 @@
 [build-system]
-requires = ["setuptools>=70"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "gonnx"
 version = "0.1.0"
-description = "Python worker SDK for the gonnx ONNX runtime"
-readme = "README.md"
+description = "Python SDK for gonnx model workers"
+requires-python = ">=3.10"
 license = { text = "MIT" }
-requires-python = ">=3.12"
-dependencies = []
+readme = "README.md"
+
+dependencies = [
+    "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
-runtime = ["onnxruntime>=1.20"]
-runtime-gpu = ["onnxruntime-gpu>=1.20"]
+cpu = ["onnxruntime>=1.18"]
+gpu = ["onnxruntime-gpu>=1.18"]
+dev = ["pytest>=8", "pytest-timeout"]
+
+[tool.setuptools.packages.find]
+where = ["."]  # find packages relative to sdk/python/
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

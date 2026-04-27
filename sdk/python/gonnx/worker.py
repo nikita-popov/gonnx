@@ -1,63 +1,56 @@
-"""Base class for gonnx model workers.
+"""Entry point for gonnx worker processes.
 
-A worker author subclasses ModelWorker and implements:
-  - load(ctx)       — called once at startup; create ONNX Runtime sessions here
-  - describe()      — return static metadata (optional override)
-  - predict(req)    — called for every inference request
-  - unload()        — called before shutdown (optional override)
+Invoked by the Go supervisor as:
+    python3 -m gonnx.worker --entrypoint <path> --callable <name>
 
-The SDK starts a minimal HTTP server on the Unix socket path provided
-via the GONNX_SOCKET environment variable.
+All other configuration is read from environment variables:
+    GONNX_SOCKET       Unix socket path to listen on (required)
+    GONNX_MODEL_PATH   Path to the .onnx model file (required)
+    GONNX_BUNDLE_DIR   Bundle root directory (required)
+    GONNX_PROVIDERS    Comma-separated ONNX execution providers
 """
+
 from __future__ import annotations
 
-import abc
-import dataclasses
+import argparse
+import logging
 import os
-from typing import Any
+import sys
 
 
-@dataclasses.dataclass
-class WorkerContext:
-    model_path: str
-    bundle_dir: str
-    providers: list[str]
-    scratch_dir: str
-
-    def asset(self, relative_path: str) -> str:
-        """Resolve a path relative to the bundle directory."""
-        return os.path.join(self.bundle_dir, relative_path)
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="python3 -m gonnx.worker")
+    p.add_argument("--entrypoint", required=True, help="Path to handler script")
+    p.add_argument("--callable", required=True, dest="callable_name",
+                   help="Callable name inside the handler script")
+    p.add_argument("--log-level", default="INFO",
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    return p.parse_args()
 
 
-@dataclasses.dataclass
-class Request:
-    json: dict[str, Any]
+def main() -> None:
+    args = _parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+
+    sock = os.environ.get("GONNX_SOCKET")
+    if not sock:
+        sys.exit("GONNX_SOCKET is not set")
+
+    from .context import WorkerContext
+    from .server import serve
+
+    ctx = WorkerContext.from_env()
+    serve(
+        ctx=ctx,
+        entrypoint=args.entrypoint,
+        callable_name=args.callable_name,
+        sock_path=sock,
+    )
 
 
-@dataclasses.dataclass
-class Response:
-    json: dict[str, Any]
-    status: int = 200
-
-
-class ModelWorker(abc.ABC):
-    """Base class for all gonnx workers."""
-
-    @abc.abstractmethod
-    def load(self, ctx: WorkerContext) -> None:
-        """Load model assets. Called once at startup."""
-
-    @abc.abstractmethod
-    def predict(self, req: Request) -> Response | dict[str, Any]:
-        """Run inference. Called for every request."""
-
-    def unload(self) -> None:
-        """Optional cleanup before shutdown."""
-
-    def describe(self) -> dict[str, Any]:
-        """Return static worker metadata."""
-        return {}
-
-    def run(self) -> None:
-        """Start the worker HTTP server. Called by the SDK entry point."""
-        raise NotImplementedError("worker HTTP server not yet implemented")
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,6 @@
-"""gonnx Python worker SDK."""
-from .worker import ModelWorker, Request, Response, WorkerContext
+"""gonnx Python SDK — model worker runtime."""
 
-__all__ = ["ModelWorker", "Request", "Response", "WorkerContext"]
+from .context import WorkerContext
+from .types import Request, Response
+
+__all__ = ["WorkerContext", "Request", "Response"]
