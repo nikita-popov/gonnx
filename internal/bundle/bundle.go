@@ -2,17 +2,20 @@
 //
 // A bundle is a directory that contains at minimum:
 //   - manifest.yaml
-//   - the ONNX model file declared in manifest.runtime.model
 //   - the handler entrypoint declared in manifest.handler.entrypoint
+//
+// Asset files (model.onnx, voices.bin, …) are NOT required at install time;
+// they are downloaded separately by `gonnxctl pull` and verified by
+// CheckAssets before a worker is started.
 //
 // Typical layout:
 //
 //	bundle/
 //	  manifest.yaml
-//	  model.onnx
 //	  handler.py
 //	  requirements.txt
-//	  assets/
+//	  model.onnx        ← present only after `gonnxctl pull`
+//	  voices.bin        ← present only after `gonnxctl pull`
 //	  examples/
 package bundle
 
@@ -38,31 +41,38 @@ type Bundle struct {
 	Dir string
 	// Manifest is the parsed manifest.
 	Manifest *Manifest
-	// Digest is a hex-encoded sha256 over all bundle files.
+	// Digest is a hex-encoded sha256 over present bundle files.
+	// Files declared in assets[] but not yet downloaded are excluded.
 	Digest string
 }
 
 // Load reads, parses, and verifies a bundle at dir.
-// It returns an error if any required file is missing or the manifest is invalid.
+//
+// It checks:
+//   - manifest.yaml exists and is valid
+//   - handler entrypoint exists (always committed to git)
+//
+// It does NOT check asset files (model.onnx etc.). Call CheckAssets
+// before starting a worker to ensure all assets are present.
 func Load(dir string) (*Bundle, error) {
 	dir = filepath.Clean(dir)
 
 	m, err := parseManifest(filepath.Join(dir, manifestFile))
 	if err != nil {
-		return nil, fmt.Errorf("bundle %s: %w", dir, err)
+		return nil, fmt.Errorf("bundle load: bundle %s: %w", dir, err)
 	}
 
 	if err := validateManifest(m); err != nil {
-		return nil, fmt.Errorf("bundle %s: manifest invalid: %w", dir, err)
+		return nil, fmt.Errorf("bundle load: bundle %s: manifest invalid: %w", dir, err)
 	}
 
-	if err := checkFiles(dir, m); err != nil {
-		return nil, fmt.Errorf("bundle %s: %w", dir, err)
+	if err := checkCodeFiles(dir, m); err != nil {
+		return nil, fmt.Errorf("bundle load: bundle %s: %w", dir, err)
 	}
 
 	digest, err := computeDigest(dir)
 	if err != nil {
-		return nil, fmt.Errorf("bundle %s: digest: %w", dir, err)
+		return nil, fmt.Errorf("bundle load: bundle %s: digest: %w", dir, err)
 	}
 
 	return &Bundle{
@@ -70,6 +80,41 @@ func Load(dir string) (*Bundle, error) {
 		Manifest: m,
 		Digest:   digest,
 	}, nil
+}
+
+// CheckAssets verifies that every asset declared in the manifest has been
+// downloaded to its dest path inside dir.
+//
+// Returns a structured error listing all missing assets so the caller can
+// surface a useful message: "run gonnxctl pull <name> first".
+func CheckAssets(dir string, m *Manifest) error {
+	var missing []string
+	for _, a := range m.Assets {
+		if a.Dest == "" {
+			continue
+		}
+		dest := filepath.Join(dir, a.Dest)
+		if _, err := os.Stat(dest); errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, a.Dest)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return &MissingAssetsError{Missing: missing}
+}
+
+// MissingAssetsError is returned by CheckAssets when one or more asset
+// destination files are absent from the bundle directory.
+type MissingAssetsError struct {
+	Missing []string
+}
+
+func (e *MissingAssetsError) Error() string {
+	return fmt.Sprintf(
+		"assets not downloaded (%v); run: gonnxctl pull <name>",
+		e.Missing,
+	)
 }
 
 // ModelPath returns the absolute path to the ONNX model file.
@@ -153,16 +198,9 @@ func validateManifest(m *Manifest) error {
 	return errors.Join(errs...)
 }
 
-// checkFiles verifies that model and handler files declared in the manifest exist.
-func checkFiles(dir string, m *Manifest) error {
-	model := filepath.Join(dir, m.Runtime.Model)
-	if _, err := os.Stat(model); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("model file not found: %s", m.Runtime.Model)
-		}
-		return err
-	}
-
+// checkCodeFiles verifies that the handler entrypoint (always in git) exists.
+// Asset files (model.onnx etc.) are intentionally NOT checked here.
+func checkCodeFiles(dir string, m *Manifest) error {
 	handler := filepath.Join(dir, m.Handler.Entrypoint)
 	if _, err := os.Stat(handler); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -170,17 +208,14 @@ func checkFiles(dir string, m *Manifest) error {
 		}
 		return err
 	}
-
 	return nil
 }
 
 // computeDigest walks the bundle directory and returns a hex sha256
 // computed over the sorted list of relative file paths and their contents.
-// Directories and symlinks are skipped.
+// Directories, symlinks, and files that cannot be opened are skipped.
 func computeDigest(dir string) (string, error) {
-	type entry struct {
-		path string
-	}
+	type entry struct{ path string }
 
 	var entries []entry
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -207,13 +242,18 @@ func computeDigest(dir string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		// Write the relative path as part of the digest so renames change it.
-		fmt.Fprintf(h, "%s\x00", rel)
 
 		f, err := os.Open(e.path)
+		if errors.Is(err, os.ErrNotExist) {
+			// Asset not yet downloaded — skip, will be included after pull.
+			continue
+		}
 		if err != nil {
 			return "", err
 		}
+
+		// Write the relative path as part of the digest so renames change it.
+		fmt.Fprintf(h, "%s\x00", rel)
 		if _, err := io.Copy(h, f); err != nil {
 			f.Close()
 			return "", err
