@@ -63,17 +63,29 @@ func withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		slog.Info("request",
+
+		attrs := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.status,
-		)
+		}
+		if rw.errMsg != "" {
+			attrs = append(attrs, "error", rw.errMsg)
+		}
+		if rw.status >= 500 {
+			slog.Error("request", attrs...)
+		} else if rw.status >= 400 {
+			slog.Warn("request", attrs...)
+		} else {
+			slog.Info("request", attrs...)
+		}
 	})
 }
 
 type responseWriter struct {
 	http.ResponseWriter
 	status int
+	errMsg string
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -477,7 +489,12 @@ func jsonOK(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
 }
 
+// jsonErr writes a JSON error response and records the message in the
+// responseWriter so withLogging can emit it alongside the status code.
 func jsonErr(w http.ResponseWriter, status int, msg string) {
+	if rw, ok := w.(*responseWriter); ok {
+		rw.errMsg = msg
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
