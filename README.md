@@ -38,8 +38,6 @@ internal/
   telemetry/      structured logging and metrics
 sdk/
   python/         Python worker SDK
-examples/
-  resnet50/       image classification bundle example
 docs/
   rfc-v0.md       architecture RFC
 ```
@@ -48,14 +46,26 @@ docs/
 
 ```sh
 # start daemon
-gonnxd serve
+gonnxd --addr :7860
 
-# install a bundle from Git
-gonnxctl install https://github.com/example/vision-models.git --ref master --dir models/resnet50
+# install a bundle directly from the examples repo
+gonnxctl install https://github.com/nikita-popov/examples-gonnx.git --dir resnet50
 
-# run inference
-gonnxctl run resnet50 -f examples/resnet50/examples/request.json
+# load worker
+gonnxctl load resnet50
+
+# run inference (reads JSON from stdin)
+echo '{"image": "'$(base64 -w0 cat.jpg)'", "top_k": 3}' | gonnxctl run resnet50
 ```
+
+## Bundle examples
+
+Ready-to-use bundles live in a separate repository:
+**[nikita-popov/examples-gonnx](https://github.com/nikita-popov/examples-gonnx)**
+
+| Bundle | Task | Model |
+|--------|------|-------|
+| [resnet50](https://github.com/nikita-popov/examples-gonnx/tree/master/resnet50) | Image classification (ImageNet-1k) | ResNet-50 |
 
 ## Status
 
