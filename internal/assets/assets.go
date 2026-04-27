@@ -6,13 +6,12 @@
 //	 plan, err := assets.Plan(manifest, bundleDir)
 //	 if err != nil { ... }
 //	 for _, item := range plan {
-//	     log.Printf("fetching %s", item.Asset.ID)
+//	     log.Printf("fetching %s (%d bytes)", item.Asset.ID, item.Asset.Size)
 //	 }
 //	 if err := assets.Fetch(ctx, plan, nil); err != nil { ... }
 //
 // A Plan contains only the assets that are absent or whose sha256 does not
-// match the on-disk file.  Assets that are already correct are excluded, so
-// calling Fetch on a fully populated bundle is a no-op.
+// match the on-disk file. Assets that are already correct are excluded.
 package assets
 
 import (
@@ -38,8 +37,6 @@ type Item struct {
 }
 
 // Plan inspects bundleDir and returns the list of assets that need fetching.
-// It validates that no dest path escapes bundleDir (directory traversal) and
-// that all sha256 values are well-formed 64-char hex strings.
 func Plan(m *bundle.Manifest, bundleDir string) ([]Item, error) {
 	var items []Item
 	seen := make(map[string]struct{}, len(m.Assets))
@@ -74,15 +71,16 @@ type FetchOptions struct {
 	// Nil falls back to os.Getenv.
 	Environ func(string) string
 
-	// Progress is called after each successful asset download with the asset ID
-	// and number of bytes written. Nil disables progress reporting.
-	Progress func(id string, bytes int64)
+	// Progress is called periodically during each asset download.
+	// written is the number of bytes written so far; total is the
+	// Content-Length (-1 if unknown). Called once per chunk and once
+	// more with written==total when the download completes.
+	Progress func(id string, written, total int64)
 }
 
 // Fetch downloads and verifies all items in the plan.
 // Each file is written to a temporary path first, sha256-verified, then
-// renamed to its final destination atomically. A failure leaves no partial
-// file at the destination.
+// renamed to its final destination atomically.
 func Fetch(ctx context.Context, plan []Item, opts *FetchOptions) error {
 	if opts == nil {
 		opts = &FetchOptions{}
@@ -103,8 +101,7 @@ func Fetch(ctx context.Context, plan []Item, opts *FetchOptions) error {
 }
 
 // CheckPresent returns an error listing every asset whose dest file is absent
-// or whose sha256 does not match. Used by the load path to give an actionable
-// error before starting the worker.
+// or whose sha256 does not match.
 func CheckPresent(m *bundle.Manifest, bundleDir string) error {
 	var missing []string
 	for _, a := range m.Assets {
@@ -132,6 +129,26 @@ func CheckPresent(m *bundle.Manifest, bundleDir string) error {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+// progressWriter wraps an io.Writer and calls a progress callback after each
+// Write, reporting cumulative bytes written and the total size.
+type progressWriter struct {
+	w       io.Writer
+	h       io.Writer // sha256 tee destination
+	id      string
+	total   int64
+	written int64
+	cb      func(id string, written, total int64)
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.w.Write(p)
+	pw.written += int64(n)
+	if pw.cb != nil {
+		pw.cb(pw.id, pw.written, pw.total)
+	}
+	return n, err
+}
+
 func validateAsset(a bundle.Asset, bundleDir string) error {
 	if a.ID == "" {
 		return errors.New("id is required")
@@ -148,7 +165,6 @@ func validateAsset(a bundle.Asset, bundleDir string) error {
 	if a.Dest == "" {
 		return errors.New("dest is required")
 	}
-	// Reject directory traversal.
 	destAbs := filepath.Join(bundleDir, a.Dest)
 	if !strings.HasPrefix(destAbs, filepath.Clean(bundleDir)+string(os.PathSeparator)) {
 		return fmt.Errorf("dest %q escapes bundle directory", a.Dest)
@@ -156,8 +172,6 @@ func validateAsset(a bundle.Asset, bundleDir string) error {
 	return nil
 }
 
-// cacheMiss returns "" if destAbs exists and its sha256 matches expected.
-// Returns "absent" or "sha256_mismatch" otherwise.
 func cacheMiss(destAbs, expected string) (string, error) {
 	f, err := os.Open(destAbs)
 	if errors.Is(err, os.ErrNotExist) {
@@ -179,14 +193,11 @@ func cacheMiss(destAbs, expected string) (string, error) {
 	return "", nil
 }
 
-// fetchOne downloads a single asset item.
 func fetchOne(ctx context.Context, item Item, opts *FetchOptions) error {
-	// Ensure destination directory exists.
 	if err := os.MkdirAll(filepath.Dir(item.DestAbs), 0o755); err != nil {
 		return err
 	}
 
-	// Build request.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.Asset.URL, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -208,47 +219,48 @@ func fetchOne(ctx context.Context, item Item, opts *FetchOptions) error {
 		return fmt.Errorf("server returned %s", resp.Status)
 	}
 
-	// Write to a temp file in the same directory as the destination so that
-	// os.Rename is always on the same filesystem (atomic).
+	// Content-Length may be -1 (unknown) for chunked transfers.
+	total := resp.ContentLength
+
 	tmp, err := os.CreateTemp(filepath.Dir(item.DestAbs), ".gonnx-asset-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	// Ensure temp file is cleaned up on any error path.
 	defer func() {
 		tmp.Close()
-		os.Remove(tmpName) // no-op if already renamed
+		os.Remove(tmpName)
 	}()
 
-	// TODO(v0.2): implement unpack for tar.gz / zip when item.Asset.Unpack != nil.
 	if item.Asset.Unpack != nil {
 		return fmt.Errorf("unpack is not yet implemented")
 	}
 
-	// Stream download while computing sha256.
 	h := sha256.New()
-	n, err := io.Copy(tmp, io.TeeReader(resp.Body, h))
-	if err != nil {
+	// teeWriter fans out to both the temp file and the sha256 hash.
+	tee := io.MultiWriter(tmp, h)
+
+	pw := &progressWriter{
+		w:     tee,
+		id:    item.Asset.ID,
+		total: total,
+		cb:    opts.Progress,
+	}
+
+	if _, err := io.Copy(pw, resp.Body); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 
-	// Verify hash.
 	got := hex.EncodeToString(h.Sum(nil))
 	if !strings.EqualFold(got, item.Asset.SHA256) {
 		return fmt.Errorf("sha256 mismatch: expected %s, got %s", item.Asset.SHA256, got)
 	}
 
-	// Atomic rename.
 	if err := os.Rename(tmpName, item.DestAbs); err != nil {
 		return err
-	}
-
-	if opts.Progress != nil {
-		opts.Progress(item.Asset.ID, n)
 	}
 	return nil
 }

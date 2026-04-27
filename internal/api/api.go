@@ -3,6 +3,7 @@
 // Routes:
 //
 //	POST   /v1/models:install          install a bundle from Git
+//	POST   /v1/models/{name}:pull      download bundle assets (NDJSON stream)
 //	GET    /v1/models                  list installed bundles
 //	GET    /v1/models/{name}           get bundle metadata
 //	DELETE /v1/models/{name}           uninstall a bundle
@@ -21,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/nikita-popov/gonnx/internal/assets"
 	"github.com/nikita-popov/gonnx/internal/bundle"
 	"github.com/nikita-popov/gonnx/internal/registry"
 	"github.com/nikita-popov/gonnx/internal/runtime"
@@ -51,7 +53,6 @@ func NewRouter(svc Services) http.Handler {
 	return withLogging(mux)
 }
 
-// withLogging wraps a handler to log method, path, and status.
 func withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
@@ -187,6 +188,8 @@ func handleModel(svc Services) http.HandlerFunc {
 			handleGetModel(svc, name, w, r)
 		case r.Method == http.MethodDelete && action == "":
 			handleDeleteModel(svc, name, w, r)
+		case r.Method == http.MethodPost && action == "pull":
+			handlePull(svc, name, w, r)
 		case r.Method == http.MethodPost && action == "load":
 			handleLoad(svc, name, w, r)
 		case r.Method == http.MethodPost && action == "unload":
@@ -224,6 +227,79 @@ func handleDeleteModel(svc Services, name string, w http.ResponseWriter, r *http
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePull streams asset download progress as NDJSON to the client.
+//
+// Each line is a JSON object (one of):
+//
+//	{"status":"pulling", "asset":"model",   "written":169803776, "total":334118912}
+//	{"status":"done",    "name":"kokoro-tts"}
+//	{"status":"error",   "error":"..."}
+//
+// The response is always 200 OK; errors are encoded as a final NDJSON line.
+// Callers should check for the "error" status in the last event.
+func handlePull(svc Services, name string, w http.ResponseWriter, r *http.Request) {
+	e, err := svc.Registry.Get(r.Context(), name)
+	if errors.Is(err, registry.ErrNotFound) {
+		jsonErr(w, http.StatusNotFound, "model not found: "+name)
+		return
+	}
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	b, err := bundle.Load(e.BundleDir)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "bundle load: "+err.Error())
+		return
+	}
+
+	plan, err := assets.Plan(b.Manifest, e.BundleDir)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "asset plan: "+err.Error())
+		return
+	}
+
+	// Switch to NDJSON streaming — headers must be set before any Write.
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	flusher, canFlush := w.(http.Flusher)
+
+	emit := func(v any) {
+		line, _ := json.Marshal(v)
+		w.Write(append(line, '\n')) //nolint:errcheck
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+
+	if len(plan) == 0 {
+		// All assets already present and verified — nothing to do.
+		emit(map[string]any{"status": "done", "name": name, "skipped": true})
+		return
+	}
+
+	progCB := func(id string, written, total int64) {
+		emit(map[string]any{
+			"status":  "pulling",
+			"asset":   id,
+			"written": written,
+			"total":   total,
+		})
+	}
+
+	fetchErr := assets.Fetch(r.Context(), plan, &assets.FetchOptions{
+		Progress: progCB,
+	})
+	if fetchErr != nil {
+		emit(map[string]any{"status": "error", "error": fetchErr.Error()})
+		return
+	}
+
+	emit(map[string]any{"status": "done", "name": name})
+}
+
 func handleLoad(svc Services, name string, w http.ResponseWriter, r *http.Request) {
 	e, err := svc.Registry.Get(r.Context(), name)
 	if errors.Is(err, registry.ErrNotFound) {
@@ -241,6 +317,12 @@ func handleLoad(svc Services, name string, w http.ResponseWriter, r *http.Reques
 		return
 	}
 	m := b.Manifest
+
+	// Verify assets before attempting to start the worker.
+	if err := bundle.CheckAssets(e.BundleDir, m); err != nil {
+		jsonErr(w, http.StatusConflict, err.Error())
+		return
+	}
 
 	if err := svc.Manager.Load(r.Context(), runtime.LoadRequest{
 		Name:              name,
@@ -274,8 +356,6 @@ func handleDescribe(svc Services, name string, w http.ResponseWriter, r *http.Re
 	jsonOK(w, dr)
 }
 
-// handlePredict validates the request body against the bundle's inputSchema
-// (if declared) before forwarding it to the worker.
 func handlePredict(svc Services, name string, w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
@@ -285,7 +365,6 @@ func handlePredict(svc Services, name string, w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// --- schema validation -------------------------------------------------
 	e, err := svc.Registry.Get(r.Context(), name)
 	if errors.Is(err, registry.ErrNotFound) {
 		jsonErr(w, http.StatusNotFound, "model not found: "+name)
@@ -304,7 +383,6 @@ func handlePredict(svc Services, name string, w http.ResponseWriter, r *http.Req
 
 	v, err := schema.Compile(b.Manifest.Interface.InputSchema)
 	if err != nil {
-		// Misconfigured schema is a 500 — the operator must fix the bundle.
 		jsonErr(w, http.StatusInternalServerError, "inputSchema compile: "+err.Error())
 		return
 	}
@@ -317,7 +395,6 @@ func handlePredict(svc Services, name string, w http.ResponseWriter, r *http.Req
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// -----------------------------------------------------------------------
 
 	resp, err := svc.Manager.Predict(r.Context(), name, raw)
 	if err != nil {
