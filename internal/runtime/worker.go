@@ -61,6 +61,10 @@ type Worker struct {
 	cmd    *exec.Cmd
 	client *http.Client
 	state  WorkerState
+	// waitCh receives the result of cmd.Wait() exactly once.
+	// It is used by waitHealthy to detect process exit without polling
+	// ProcessState, and by Unload to await graceful shutdown.
+	waitCh <-chan error
 }
 
 // State returns the current lifecycle state.
