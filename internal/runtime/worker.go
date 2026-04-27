@@ -12,7 +12,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
