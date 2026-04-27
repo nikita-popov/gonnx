@@ -99,23 +99,24 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &ve)
 }
 
-// flattenErrors uses BasicOutput() which returns a flat []BasicError list;
-// each BasicError has string fields InstanceLocation and Error.
+// flattenErrors recursively walks the ValidationError tree.
+//
+// In v6.0.1 the only stable public surface for a human-readable message is
+// ve.Error() (implements error). InstanceLocation is []string — we join it
+// with '/' to form a JSON Pointer. Leaf nodes (no Causes) carry the actual
+// constraint message; intermediate nodes just group them.
 func flattenErrors(ve *jsonschema.ValidationError) []string {
-	basic := ve.BasicOutput()
-	msgs := make([]string, 0, len(basic.Errors))
-	for _, e := range basic.Errors {
-		if e.Error == "" {
-			continue
+	if len(ve.Causes) == 0 {
+		loc := "/" + strings.Join(ve.InstanceLocation, "/")
+		msg := ve.ErrorKind.LocalizedString(nil)
+		if msg == "" {
+			msg = ve.Error()
 		}
-		loc := e.InstanceLocation
-		if loc == "" {
-			loc = "/"
-		}
-		msgs = append(msgs, loc+": "+e.Error)
+		return []string{loc + ": " + msg}
 	}
-	if len(msgs) == 0 {
-		msgs = append(msgs, ve.Error())
+	var msgs []string
+	for _, cause := range ve.Causes {
+		msgs = append(msgs, flattenErrors(cause)...)
 	}
 	return msgs
 }
