@@ -1,6 +1,7 @@
-.PHONY: build check clean
+.PHONY: build check clean deps fmt test test-py vet
 
 GO       = go
+PYTHON  ?= python3
 BIN_DIR := bin
 DAEMON  := $(BIN_DIR)/gonnxd
 CTL     := $(BIN_DIR)/gonnxctl
@@ -27,7 +28,13 @@ vet:
 test:
 	$(GO) test -v -race ./...
 
-check: fmt vet test
+# Install the Python SDK in editable mode (once) and run pytest.
+# Override the interpreter with:  make test-py PYTHON=python3.11
+test-py:
+	$(PYTHON) -m pip install -q -e "sdk/python[dev]"
+	$(PYTHON) -m pytest -v sdk/python
+
+check: fmt vet test test-py
 
 clean:
 	rm -rf $(BIN_DIR)
