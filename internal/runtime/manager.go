@@ -117,7 +117,14 @@ func (m *Manager) Load(ctx context.Context, req LoadRequest) error {
 		return fmt.Errorf("runtime: start worker %q: %w", req.Name, err)
 	}
 
+	// waitCh receives the error from cmd.Wait() as soon as the process exits.
+	// This is the only correct way to observe process termination without
+	// racing on ProcessState — Wait() reaps the child and populates ProcessState.
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
 	w := newWorker(req.Name, sock, cmd)
+	w.waitCh = waitCh
 	m.workers[req.Name] = w
 
 	timeout := req.StartupTimeout
@@ -155,14 +162,11 @@ func (m *Manager) Unload(ctx context.Context, name string) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, workerURL("/shutdown"), nil)
 	_, _ = w.client.Do(req)
 
-	done := make(chan error, 1)
-	go func() { done <- w.cmd.Wait() }()
-
 	select {
-	case <-done:
+	case <-w.waitCh:
 	case <-time.After(5 * time.Second):
 		_ = w.cmd.Process.Kill()
-		<-done
+		<-w.waitCh
 	}
 
 	_ = os.Remove(w.SocketPath)
@@ -243,25 +247,27 @@ func (m *Manager) UnloadAll(ctx context.Context) {
 	}
 }
 
-// waitHealthy polls the worker's /health endpoint until it responds 200
-// or the timeout expires. Returns immediately if the worker process exits.
+// waitHealthy polls the worker's /health endpoint until it responds 200,
+// the timeout expires, or the process exits (via waitCh).
 func (m *Manager) waitHealthy(ctx context.Context, w *Worker, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		if time.Now().After(deadline) {
-			return errors.New("startup timeout exceeded")
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			// Early exit: process already terminated (e.g. ImportError, OOM).
-			if w.cmd.ProcessState != nil {
-				return fmt.Errorf("worker exited unexpectedly: %s", w.cmd.ProcessState)
+		case <-timer.C:
+			return errors.New("startup timeout exceeded")
+		case waitErr := <-w.waitCh:
+			// Process exited before becoming healthy — report exit status.
+			if waitErr != nil {
+				return fmt.Errorf("worker exited: %w", waitErr)
 			}
+			return errors.New("worker exited unexpectedly")
+		case <-ticker.C:
 			if err := m.checkHealth(ctx, w); err == nil {
 				return nil
 			}
