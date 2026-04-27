@@ -16,7 +16,7 @@
 //	load   <name>               start worker
 //	unload <name>               stop worker
 //	describe <name>             show input/output schema
-//	run <name> [json-body]      run inference (reads stdin if no arg)
+//	run <name> [-f file | json-body]  run inference (reads stdin if no arg)
 package main
 
 import (
@@ -74,7 +74,7 @@ func main() {
 		requireArg(args, 2, "describe <name>")
 		c.get("/v1/models/" + args[1] + ":describe")
 	case "run":
-		requireArg(args, 2, "run <name> [json]")
+		requireArg(args, 2, "run <name> [-f file | json]")
 		runCmd(c, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
@@ -335,18 +335,40 @@ func int64AsFloat(v any) int64 {
 	return int64(f)
 }
 
+// runCmd sends a predict request to the daemon.
+//
+// Supported forms:
+//
+//	gonnxctl run <model>                  # read JSON from stdin
+//	gonnxctl run <model> -f <file>        # read JSON from file
+//	gonnxctl run <model> '{"key":"val"}'  # inline JSON literal
 func runCmd(c *client, args []string) {
 	name := args[0]
+	rest := args[1:]
+
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	file := fs.String("f", "", "read request body from `file`")
+	fs.Parse(rest) //nolint:errcheck
+	positional := fs.Args()
+
 	var body []byte
-	if len(args) > 1 {
-		body = []byte(args[1])
-	} else {
+	switch {
+	case *file != "":
+		var err error
+		body, err = os.ReadFile(*file)
+		if err != nil {
+			fatal(fmt.Errorf("read %s: %w", *file, err))
+		}
+	case len(positional) > 0:
+		body = []byte(positional[0])
+	default:
 		var err error
 		body, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			fatal(err)
 		}
 	}
+
 	resp, err := c.raw(http.MethodPost, "/v1/models/"+name+":predict",
 		bytes.NewReader(body), "application/json")
 	if err != nil {
@@ -464,14 +486,16 @@ Commands:
   load   <name>                 start worker process
   unload <name>                 stop worker process
   describe <name>               show input/output schema
-  run <name> [json]             run inference (reads stdin if no json arg)
+  run <name> [-f file | json]   run inference (reads stdin if no arg)
 
 Flags for install:
   --name   override bundle name (default: name from manifest)
   --ref    override git ref     (default: master)
   --dir    subdir inside repo that contains the bundle
 
+Flags for run:
+  -f <file>  read request JSON from file instead of stdin
+
 Environment:
-  GONNX_HOST     daemon address      (default http://localhost:7860)
-  GONNXD_SDK_DIR path to sdk/python  (auto-detected from binary location)`)
+  GONNX_HOST  daemon address (default http://localhost:7860)`)
 }
