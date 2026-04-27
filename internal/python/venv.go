@@ -1,8 +1,8 @@
 // Package python manages per-bundle Python virtual environments.
 //
 // Each bundle gets an isolated venv at bundleDir/.venv. Setup is idempotent:
-// it re-runs only when requirements.txt changes (tracked via a sha256
-// sentinel file at .venv/gonnx.installed).
+// it re-runs only when requirements.txt or the SDK content changes (tracked
+// via a sha256 sentinel file at .venv/gonnx.installed).
 package python
 
 import (
@@ -12,16 +12,18 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 const (
 	// venvDir is the venv directory name inside bundleDir.
 	venvDir = ".venv"
-	// sentinelFile records the sha256 of requirements that were installed.
+	// sentinelFile records the inputs that were used to build the venv.
 	// If missing or stale, Setup re-installs.
 	sentinelFile = ".venv/gonnx.installed"
 )
@@ -52,9 +54,15 @@ func Setup(ctx context.Context, bundleDir string, opts SetupOptions) error {
 		return fmt.Errorf("python: hash requirements.txt: %w", err)
 	}
 
-	// Sentinel encodes: sdkDir + requirements hash so a SDK upgrade also
-	// triggers a re-install.
-	sentinelContent := opts.SDKDir + "\n" + reqHash
+	// Hash SDK source files so that upgrading the SDK (without changing its
+	// path) also triggers a venv rebuild.
+	sdkHash, err := dirHash(opts.SDKDir)
+	if err != nil && opts.SDKDir != "" {
+		return fmt.Errorf("python: hash sdk: %w", err)
+	}
+
+	// Sentinel encodes: sdkDir + sdk content hash + requirements hash.
+	sentinelContent := opts.SDKDir + "\n" + sdkHash + "\n" + reqHash
 	sentinelPath := filepath.Join(bundleDir, sentinelFile)
 
 	if current, err := os.ReadFile(sentinelPath); err == nil {
@@ -160,6 +168,45 @@ func fileHash(path string) (string, error) {
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// dirHash returns a deterministic sha256 over all regular files under dir,
+// sorted by relative path. Returns "" if dir is empty string.
+func dirHash(dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	var paths []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(paths)
+
+	h := sha256.New()
+	for _, p := range paths {
+		rel, _ := filepath.Rel(dir, p)
+		fmt.Fprintf(h, "%s\n", rel)
+		f, err := os.Open(p)
+		if err != nil {
+			return "", err
+		}
+		_, err = io.Copy(h, f)
+		f.Close()
+		if err != nil {
+			return "", err
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
