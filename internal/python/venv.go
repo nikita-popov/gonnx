@@ -6,6 +6,7 @@
 package python
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -67,21 +68,21 @@ func Setup(ctx context.Context, bundleDir string, opts SetupOptions) error {
 
 	// 1. Create venv (--clear resets a stale one).
 	opts.Progress("creating venv")
-	if err := run(ctx, bundleDir, "python3", "-m", "venv", "--clear", venv); err != nil {
+	if err := run(ctx, bundleDir, opts.Progress, "python3", "-m", "venv", "--clear", venv); err != nil {
 		return fmt.Errorf("python: create venv: %w", err)
 	}
 
 	pip := filepath.Join(venv, "bin", "pip")
 
 	// 2. Upgrade pip silently.
-	if err := run(ctx, bundleDir, pip, "install", "--quiet", "--upgrade", "pip"); err != nil {
+	if err := run(ctx, bundleDir, opts.Progress, pip, "install", "--quiet", "--upgrade", "pip"); err != nil {
 		return fmt.Errorf("python: upgrade pip: %w", err)
 	}
 
 	// 3. Install gonnx SDK.
 	if opts.SDKDir != "" {
 		opts.Progress("installing gonnx SDK")
-		if err := run(ctx, bundleDir, pip, "install", "--quiet", opts.SDKDir); err != nil {
+		if err := run(ctx, bundleDir, opts.Progress, pip, "install", opts.SDKDir); err != nil {
 			return fmt.Errorf("python: install gonnx SDK: %w", err)
 		}
 	}
@@ -89,7 +90,7 @@ func Setup(ctx context.Context, bundleDir string, opts SetupOptions) error {
 	// 4. Install bundle requirements.
 	if reqHash != "" {
 		opts.Progress("installing requirements.txt")
-		if err := run(ctx, bundleDir, pip, "install", "--quiet", "-r", reqFile); err != nil {
+		if err := run(ctx, bundleDir, opts.Progress, pip, "install", "-r", reqFile); err != nil {
 			return fmt.Errorf("python: install requirements: %w", err)
 		}
 	}
@@ -118,12 +119,36 @@ func VenvPython(bundleDir string) string {
 
 // ---------------------------------------------------------------------------
 
-func run(ctx context.Context, dir string, name string, args ...string) error {
+// run executes a command, capturing combined stdout+stderr.
+// On failure the output is included in the returned error so callers
+// (and the client) get actionable diagnostics, not just "exit status 1".
+// Each output line is also forwarded to progress so the client sees
+// real-time pip output during pull streaming.
+func run(ctx context.Context, dir string, progress func(string), name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	var buf bytes.Buffer
+	// Tee: capture for error message AND write to daemon stderr for logs.
+	mw := io.MultiWriter(&buf, os.Stderr)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+
+	err := cmd.Run()
+	if err != nil {
+		out := strings.TrimSpace(buf.String())
+		if out != "" {
+			// Forward the full output to the client via progress stream.
+			for _, line := range strings.Split(out, "\n") {
+				if l := strings.TrimSpace(line); l != "" {
+					progress(l)
+				}
+			}
+			return fmt.Errorf("%w\n%s", err, out)
+		}
+		return err
+	}
+	return nil
 }
 
 func fileHash(path string) (string, error) {
